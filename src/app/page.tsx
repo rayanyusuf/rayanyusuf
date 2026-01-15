@@ -1,10 +1,34 @@
 const videos = [
-  { id: "MLYqaM7S5Mw", url: "https://youtu.be/MLYqaM7S5Mw" },
-  { id: "wEIer1H-K3Y", url: "https://youtu.be/wEIer1H-K3Y" },
-  { id: "zN_xb7G7eSE", url: "https://youtu.be/zN_xb7G7eSE" },
-  { id: "UwNwCCz9Fss", url: "https://youtu.be/UwNwCCz9Fss" },
-  { id: "Kl102oZX23I", url: "https://youtu.be/Kl102oZX23I" },
-  { id: "gDMFbesrKRU", url: "https://youtu.be/gDMFbesrKRU" },
+  { 
+    id: "MLYqaM7S5Mw", 
+    url: "https://youtu.be/MLYqaM7S5Mw",
+    title: "Ch 2 Argand Diagrams Worksheet"
+  },
+  { 
+    id: "wEIer1H-K3Y", 
+    url: "https://youtu.be/wEIer1H-K3Y",
+    title: "Further Math - June 2021 - Paper 1 - Question 1"
+  },
+  { 
+    id: "zN_xb7G7eSE", 
+    url: "https://youtu.be/zN_xb7G7eSE",
+    title: "Further Math - November 2021 - Paper 2"
+  },
+  { 
+    id: "UwNwCCz9Fss", 
+    url: "https://youtu.be/UwNwCCz9Fss",
+    title: "Further Math - June 2020 - Paper 2 - Question 7"
+  },
+  { 
+    id: "Kl102oZX23I", 
+    url: "https://youtu.be/Kl102oZX23I",
+    title: "Further Math - June 2020 - Paper 2 - Question 2"
+  },
+  { 
+    id: "gDMFbesrKRU", 
+    url: "https://youtu.be/gDMFbesrKRU",
+    title: "June 2024 QP1 Q1 Complex Numbers" 
+  },
 ];
 
 export default function Home() {
@@ -14,13 +38,13 @@ export default function Home() {
         {/* Header Section */}
         <div className="mb-12 text-center">
           <h1 className="mb-4 text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-50 sm:text-5xl lg:text-6xl">
-            A Level Mathematics
+            Rayans Academy
           </h1>
           <p className="mx-auto max-w-2xl text-lg text-slate-600 dark:text-slate-400 sm:text-xl">
-            Past Paper Solutions & Tutorials
+            Past paper solutions and tutorials posted by a 17 year old A Level student passionate about mathematics
           </p>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-500">
-            British School Dhahran, Saudi Arabia
+            Currently studying at British School Dhahran, Saudi Arabia
           </p>
         </div>
 
@@ -35,14 +59,14 @@ export default function Home() {
                 <iframe
                   className="h-full w-full"
                   src={`https://www.youtube.com/embed/${video.id}`}
-                  title={`A Level Math Tutorial ${index + 1}`}
+                  title={video.title}
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                   allowFullScreen
                 />
               </div>
               <div className="p-4">
                 <h3 className="mb-2 text-lg font-semibold text-slate-900 dark:text-slate-50">
-                  Past Paper Solution {index + 1}
+                  {video.title}
                 </h3>
                 <a
                   href={video.url}
@@ -72,7 +96,7 @@ export default function Home() {
 
         {/* Footer */}
         <div className="mt-12 text-center text-sm text-slate-500 dark:text-slate-400">
-          <p>Created by a 17-year-old A Level student passionate about mathematics</p>
+          <p></p>
         </div>
       </main>
     </div>
