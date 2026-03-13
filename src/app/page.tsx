@@ -1,103 +1,179 @@
-const videos = [
-  { 
-    id: "MLYqaM7S5Mw", 
-    url: "https://youtu.be/MLYqaM7S5Mw",
-    title: "Ch 2 Argand Diagrams Worksheet"
-  },
-  { 
-    id: "wEIer1H-K3Y", 
-    url: "https://youtu.be/wEIer1H-K3Y",
-    title: "Further Math - June 2021 - Paper 1 - Question 1"
-  },
-  { 
-    id: "zN_xb7G7eSE", 
-    url: "https://youtu.be/zN_xb7G7eSE",
-    title: "Further Math - November 2021 - Paper 2"
-  },
-  { 
-    id: "UwNwCCz9Fss", 
-    url: "https://youtu.be/UwNwCCz9Fss",
-    title: "Further Math - June 2020 - Paper 2 - Question 7"
-  },
-  { 
-    id: "Kl102oZX23I", 
-    url: "https://youtu.be/Kl102oZX23I",
-    title: "Further Math - June 2020 - Paper 2 - Question 2"
-  },
-  { 
-    id: "gDMFbesrKRU", 
-    url: "https://youtu.be/gDMFbesrKRU",
-    title: "June 2024 QP1 Q1 Complex Numbers" 
-  },
-];
+ "use client";
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
+
+type AuthMode = "signup" | "login";
 
 export default function Home() {
+  const [authMode, setAuthMode] = useState<AuthMode>("signup");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) {
+        setUserEmail(data.user.email ?? null);
+      }
+    });
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setMessage(null);
+
+    if (authMode === "signup") {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+      if (error) {
+        setMessage(error.message);
+      } else {
+        setMessage(
+          data.user
+            ? "Account created. You are now signed in."
+            : "Check your email to confirm your account."
+        );
+        setUserEmail(data.user?.email ?? null);
+      }
+    } else {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (error) {
+        setMessage(error.message);
+      } else {
+        setMessage("Signed in successfully.");
+        setUserEmail(data.user?.email ?? null);
+      }
+    }
+
+    setLoading(false);
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setUserEmail(null);
+  };
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
-      <main className="container mx-auto px-4 py-12 sm:px-6 lg:px-8">
-        {/* Header Section */}
-        <div className="mb-12 text-center">
-          <h1 className="mb-4 text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-50 sm:text-5xl lg:text-6xl">
-            Rayans Academy
+    <div className="min-h-screen bg-black text-white flex items-center justify-center">
+      <main className="w-full max-w-4xl px-4 py-12 flex flex-col gap-10">
+        {/* Hero */}
+        <section className="text-center space-y-4">
+          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">
+            Hey! I&apos;m Rayan Yusuf
           </h1>
-          <p className="mx-auto max-w-2xl text-lg text-slate-600 dark:text-slate-400 sm:text-xl">
-            Past paper solutions and tutorials posted by a 17 year old A Level student passionate about mathematics
+          <p className="mx-auto max-w-2xl text-lg text-zinc-300">
+            I&apos;m doing my A-levels and I&apos;ve built a tool that learns
+            which areas you&apos;re weak in and gives you targeted problems so
+            you can ace your A-levels in Math, Physics, Chemistry and Further
+            Maths.
           </p>
-          <p className="mt-2 text-sm text-slate-500 dark:text-slate-500">
-            Currently studying at British School Dhahran, Saudi Arabia
-          </p>
-        </div>
+        </section>
 
-        {/* Videos Grid */}
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {videos.map((video, index) => (
-            <div
-              key={video.id}
-              className="group overflow-hidden rounded-xl bg-white shadow-lg transition-all duration-300 hover:shadow-2xl dark:bg-slate-800"
-            >
-              <div className="relative aspect-video w-full overflow-hidden bg-slate-200 dark:bg-slate-700">
-                <iframe
-                  className="h-full w-full"
-                  src={`https://www.youtube.com/embed/${video.id}`}
-                  title={video.title}
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                  allowFullScreen
-                />
-              </div>
-              <div className="p-4">
-                <h3 className="mb-2 text-lg font-semibold text-slate-900 dark:text-slate-50">
-                  {video.title}
-                </h3>
-                <a
-                  href={video.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center text-sm text-blue-600 transition-colors hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
-                >
-                  Watch on YouTube
-                  <svg
-                    className="ml-1 h-4 w-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
-                    />
-                  </svg>
-                </a>
-              </div>
+        {/* Auth card */}
+        <section className="mx-auto w-full max-w-xl rounded-2xl bg-zinc-900/80 border border-zinc-800 p-6 shadow-2xl">
+          {userEmail ? (
+            <div className="space-y-4 text-center">
+              <p className="text-sm text-zinc-300">
+                Signed in as <span className="font-semibold">{userEmail}</span>
+              </p>
+              <Link
+                href="/tool"
+                className="block w-full rounded-full bg-emerald-400 px-6 py-3 text-lg font-semibold text-black shadow-lg hover:bg-emerald-300"
+              >
+                Go to Practice Tool
+              </Link>
+              <button
+                onClick={handleSignOut}
+                className="mt-2 text-sm text-zinc-400 hover:text-zinc-200"
+              >
+                Sign out
+              </button>
             </div>
-          ))}
-        </div>
+          ) : (
+            <>
+              <div className="flex justify-center gap-4 mb-4 text-sm">
+                <button
+                  type="button"
+                  onClick={() => setAuthMode("signup")}
+                  className={`px-3 py-1 rounded-full ${
+                    authMode === "signup"
+                      ? "bg-white text-black"
+                      : "bg-zinc-800 text-zinc-300"
+                  }`}
+                >
+                  Sign up
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode("login")}
+                  className={`px-3 py-1 rounded-full ${
+                    authMode === "login"
+                      ? "bg-white text-black"
+                      : "bg-zinc-800 text-zinc-300"
+                  }`}
+                >
+                  Log in
+                </button>
+              </div>
 
-        {/* Footer */}
-        <div className="mt-12 text-center text-sm text-slate-500 dark:text-slate-400">
-          <p></p>
-        </div>
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1 text-left">
+                  <label className="text-sm text-zinc-300">Email</label>
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full rounded-md bg-black border border-zinc-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+                <div className="space-y-1 text-left">
+                  <label className="text-sm text-zinc-300">Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full rounded-md bg-black border border-zinc-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Use at least 6 characters.
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full rounded-full bg-emerald-400 px-6 py-3 text-lg font-semibold text-black shadow-lg hover:bg-emerald-300 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {loading
+                    ? "Please wait..."
+                    : authMode === "signup"
+                    ? "Create account & start"
+                    : "Log in & start"}
+                </button>
+
+                {message && (
+                  <p className="text-sm text-amber-300 text-center">{message}</p>
+                )}
+              </form>
+
+              <p className="mt-4 text-xs text-zinc-500 text-center">
+                You need an account to access the practice tool.
+              </p>
+            </>
+          )}
+        </section>
       </main>
     </div>
   );
