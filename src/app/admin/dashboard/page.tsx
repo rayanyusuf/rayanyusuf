@@ -182,7 +182,6 @@ export default function AdminDashboardPage() {
 
       // Dynamic import to keep initial bundle light.
       const pdfjs = await import("pdfjs-dist");
-      // @ts-expect-error - pdfjs ESM typings are loose
       const { GlobalWorkerOptions, getDocument } = pdfjs;
       // Serve worker from our own public folder so it always resolves.
       GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
