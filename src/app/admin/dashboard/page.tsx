@@ -102,7 +102,9 @@ export default function AdminDashboardPage() {
     setUploadingCount(pdfs.length);
 
     try {
-      const uploads = await Promise.allSettled(
+      const uploads = await Promise.allSettled<
+        { path: string; name: string; url?: string }
+      >(
         pdfs.map(async (file) => {
           const safeName = file.name.replace(/[^\w.\-() ]+/g, "_");
           // Add randomness so multiple files dropped at once never collide
@@ -127,11 +129,8 @@ export default function AdminDashboardPage() {
       );
 
       const successes = uploads
-        .filter(
-          (r): r is PromiseFulfilledResult<{ path: string; name: string; url?: string }> =>
-            r.status === "fulfilled"
-        )
-        .map((r) => r.value);
+        .filter((r) => r.status === "fulfilled")
+        .map((r) => (r as PromiseFulfilledResult<{ path: string; name: string; url?: string }>).value);
 
       const failures = uploads
         .filter((r): r is PromiseRejectedResult => r.status === "rejected")
