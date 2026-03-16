@@ -2,65 +2,48 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
 
-type AuthMode = "signup" | "login";
+const ACCESS_KEY = "ra_access_granted_v1";
+const ACCESS_PASSWORD = "solver";
 
 export default function Home() {
-  const [authMode, setAuthMode] = useState<AuthMode>("signup");
-  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [hasAccess, setHasAccess] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (data.user) {
-        setUserEmail(data.user.email ?? null);
-      }
-    });
+    try {
+      setHasAccess(window.localStorage.getItem(ACCESS_KEY) === "true");
+    } catch {
+      setHasAccess(false);
+    }
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setMessage(null);
 
-    if (authMode === "signup") {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-      });
-      if (error) {
-        setMessage(error.message);
-      } else {
-        setMessage(
-          data.user
-            ? "Account created. You are now signed in."
-            : "Check your email to confirm your account."
-        );
-        setUserEmail(data.user?.email ?? null);
+    if (password === ACCESS_PASSWORD) {
+      try {
+        window.localStorage.setItem(ACCESS_KEY, "true");
+      } catch {
+        // ignore
       }
+      setHasAccess(true);
+      setMessage(null);
     } else {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-      if (error) {
-        setMessage(error.message);
-      } else {
-        setMessage("Signed in successfully.");
-        setUserEmail(data.user?.email ?? null);
-      }
+      setMessage("Wrong password.");
     }
-
-    setLoading(false);
   };
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    setUserEmail(null);
+  const handleLock = () => {
+    try {
+      window.localStorage.removeItem(ACCESS_KEY);
+    } catch {
+      // ignore
+    }
+    setPassword("");
+    setHasAccess(false);
   };
 
   return (
@@ -81,10 +64,10 @@ export default function Home() {
 
         {/* Auth card */}
         <section className="mx-auto w-full max-w-xl rounded-2xl bg-zinc-900/80 border border-zinc-800 p-6 shadow-2xl">
-          {userEmail ? (
+          {hasAccess ? (
             <div className="space-y-4 text-center">
               <p className="text-sm text-zinc-300">
-                Signed in as <span className="font-semibold">{userEmail}</span>
+                Access granted.
               </p>
               <Link
                 href="/tool"
@@ -93,50 +76,15 @@ export default function Home() {
                 Go to Practice Tool
               </Link>
               <button
-                onClick={handleSignOut}
+                onClick={handleLock}
                 className="mt-2 text-sm text-zinc-400 hover:text-zinc-200"
               >
-                Sign out
+                Lock
               </button>
             </div>
           ) : (
             <>
-              <div className="flex justify-center gap-4 mb-4 text-sm">
-                <button
-                  type="button"
-                  onClick={() => setAuthMode("signup")}
-                  className={`px-3 py-1 rounded-full ${
-                    authMode === "signup"
-                      ? "bg-white text-black"
-                      : "bg-zinc-800 text-zinc-300"
-                  }`}
-                >
-                  Sign up
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAuthMode("login")}
-                  className={`px-3 py-1 rounded-full ${
-                    authMode === "login"
-                      ? "bg-white text-black"
-                      : "bg-zinc-800 text-zinc-300"
-                  }`}
-                >
-                  Log in
-                </button>
-              </div>
-
               <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="space-y-1 text-left">
-                  <label className="text-sm text-zinc-300">Email</label>
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full rounded-md bg-black border border-zinc-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
-                  />
-                </div>
                 <div className="space-y-1 text-left">
                   <label className="text-sm text-zinc-300">Password</label>
                   <input
@@ -146,21 +94,13 @@ export default function Home() {
                     onChange={(e) => setPassword(e.target.value)}
                     className="w-full rounded-md bg-black border border-zinc-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
                   />
-                  <p className="mt-1 text-xs text-zinc-500">
-                    Use at least 6 characters.
-                  </p>
                 </div>
 
                 <button
                   type="submit"
-                  disabled={loading}
                   className="w-full rounded-full bg-emerald-400 px-6 py-3 text-lg font-semibold text-black shadow-lg hover:bg-emerald-300 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  {loading
-                    ? "Please wait..."
-                    : authMode === "signup"
-                    ? "Create account & start"
-                    : "Log in & start"}
+                  Unlock
                 </button>
 
                 {message && (
@@ -169,7 +109,7 @@ export default function Home() {
               </form>
 
               <p className="mt-4 text-xs text-zinc-500 text-center">
-                You need an account to access the practice tool.
+                Enter the password to access the practice tool.
               </p>
             </>
           )}

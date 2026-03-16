@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 
+const ACCESS_KEY = "ra_access_granted_v1";
+
 type Problem = {
   id: string;
   src: string;
@@ -129,15 +131,18 @@ export default function ToolPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
-  // Require auth
+  // Require access password (stored in localStorage)
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) {
+    try {
+      const allowed = window.localStorage.getItem(ACCESS_KEY) === "true";
+      if (!allowed) {
         router.push("/");
-      } else {
-        setCheckingAuth(false);
+        return;
       }
-    });
+      setCheckingAuth(false);
+    } catch {
+      router.push("/");
+    }
   }, [router]);
 
   // Initial random problem
