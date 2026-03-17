@@ -3,26 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import AdminSidebar from "@/components/AdminSidebar";
 
 const ADMIN_KEY = "ra_admin_access_v1";
 const PAST_PAPERS_BUCKET = "past-papers";
 const PROBLEM_IMAGES_BUCKET = "problem-images";
-
-type NavItem = {
-  id: string;
-  label: string;
-};
-
-const navItems: NavItem[] = [
-  { id: "past-papers", label: "Past papers" },
-];
 
 export default function AdminDashboardPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pagePreviewRef = useRef<HTMLDivElement | null>(null);
   const [checking, setChecking] = useState(true);
-  const [active, setActive] = useState<NavItem["id"]>("past-papers");
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadingCount, setUploadingCount] = useState(0);
@@ -73,7 +64,9 @@ export default function AdminDashboardPage() {
       }
   >(null);
 
+  const [isAiCropping, setIsAiCropping] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
+  const [isConfirmingProblem, setIsConfirmingProblem] = useState(false);
   const [extracted, setExtracted] = useState<
     { name: string; path: string; url?: string; fromPage: number }[]
   >([]);
@@ -120,6 +113,51 @@ export default function AdminDashboardPage() {
         h: 0.64,
       })
     );
+  };
+
+  const suggestCropWithAi = async () => {
+    if (!selectedPage) return;
+    setUploadError(null);
+    setIsAiCropping(true);
+    try {
+      const { data: blob, error } = await supabase.storage
+        .from(PAST_PAPERS_BUCKET)
+        .download(selectedPage.path);
+      if (error || !blob) {
+        throw new Error(error?.message ?? "Failed to download page image.");
+      }
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => {
+          const dataUrl = r.result as string;
+          const b = dataUrl.indexOf(",") >= 0 ? dataUrl.split(",")[1] : dataUrl;
+          resolve(b ?? "");
+        };
+        r.onerror = () => reject(new Error("Failed to read image."));
+        r.readAsDataURL(blob);
+      });
+      const res = await fetch("/api/openai/crop-suggestion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64 }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        crop?: { x: number; y: number; w: number; h: number };
+      };
+      if (!res.ok) {
+        throw new Error(json?.error ?? `Request failed (${res.status})`);
+      }
+      if (json.crop) {
+        setCrop(normalizeCrop(json.crop));
+      } else {
+        throw new Error("No crop returned.");
+      }
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "AI crop failed.");
+    } finally {
+      setIsAiCropping(false);
+    }
   };
 
   const startMove: React.MouseEventHandler<HTMLDivElement> = (e) => {
@@ -210,8 +248,6 @@ export default function AdminDashboardPage() {
 
   // Load list of uploaded PDFs from storage
   useEffect(() => {
-    if (active !== "past-papers") return;
-
     const load = async () => {
       const { data, error } = await supabase.storage
         .from(PAST_PAPERS_BUCKET)
@@ -227,7 +263,7 @@ export default function AdminDashboardPage() {
     };
 
     load();
-  }, [active]);
+  }, []);
 
   // When a paper is selected, try to load already-converted page PNGs from Storage
   useEffect(() => {
@@ -569,26 +605,79 @@ export default function AdminDashboardPage() {
     }
   };
 
+  /** Standardized problem_id: Further-maths-<year>-Paper-<paperNum>-<problemNum> */
+  const generateProblemId = (paperName: string, pageNumber: number): string => {
+    const base = paperName.replace(/\.pdf$/i, "").trim();
+    const yearMatch = base.match(/\b(20\d{2})\b/);
+    const year = yearMatch ? yearMatch[1]! : new Date().getFullYear().toString();
+    const paperMatch = base.match(/QP\s*\((\d+)\)|Paper\s*(\d+)|(\d+)\s*\.\s*pdf/i);
+    const paperNum = paperMatch ? (paperMatch[1] ?? paperMatch[2] ?? paperMatch[3] ?? "1") : "1";
+    const problemNum = String(pageNumber);
+    const safe = ["Further-maths", year, "Paper", paperNum, problemNum].join("-");
+    return safe.replace(/[^\w.-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "problem";
+  };
+
+  const confirmProblem = async () => {
+    const latest = extracted[0];
+    if (!latest || !selectedPaper) return;
+
+    setUploadError(null);
+    setIsConfirmingProblem(true);
+
+    try {
+      const problemId = generateProblemId(selectedPaper.name, latest.fromPage);
+      const confirmedPath = `confirmed/${problemId}.png`;
+
+      const { data: blob, error: downErr } = await supabase.storage
+        .from(PROBLEM_IMAGES_BUCKET)
+        .download(latest.path);
+
+      if (downErr || !blob) {
+        throw new Error(downErr?.message ?? "Failed to download extracted image.");
+      }
+
+      const { error: upErr } = await supabase.storage
+        .from(PROBLEM_IMAGES_BUCKET)
+        .upload(confirmedPath, blob, { contentType: "image/png", upsert: true });
+
+      if (upErr) {
+        throw new Error(upErr.message);
+      }
+
+      const { error: dbErr } = await supabase.from("problems").upsert(
+        { problem_id: problemId, problem_image: confirmedPath },
+        { onConflict: "problem_id" }
+      );
+
+      if (dbErr) {
+        throw new Error(dbErr.message);
+      }
+
+      setUploadError(null);
+      setExtracted((prev) => prev.filter((p) => p.path !== latest.path));
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Confirm problem failed.");
+    } finally {
+      setIsConfirmingProblem(false);
+    }
+  };
+
   const handleDrop: React.DragEventHandler<HTMLDivElement> = async (e) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
-
-    if (active !== "past-papers") return;
 
     const files = Array.from(e.dataTransfer.files ?? []);
     await uploadPdfs(files);
   };
 
   const handleChooseFiles = () => {
-    if (active !== "past-papers") return;
     fileInputRef.current?.click();
   };
 
   const handleFileInputChange: React.ChangeEventHandler<HTMLInputElement> = async (
     e
   ) => {
-    if (active !== "past-papers") return;
     const files = Array.from(e.target.files ?? []);
     // allow re-selecting the same file later
     e.target.value = "";
@@ -605,359 +694,302 @@ export default function AdminDashboardPage() {
 
   return (
     <div className="min-h-screen bg-black text-white flex">
-      {/* Left menu */}
-      <aside className="w-28 sm:w-40 bg-zinc-200 text-black flex flex-col py-4 px-3">
-        <div className="flex-1 w-full flex flex-col gap-2">
-          {navItems.map((item) => {
-            const isActive = item.id === active;
-            return (
-              <button
-                key={item.id}
-                onClick={() => setActive(item.id)}
-                className={`w-full rounded-md transition flex items-center gap-3 px-2 py-2 ${
-                  isActive ? "bg-zinc-400" : "bg-zinc-300 hover:bg-zinc-400"
-                }`}
-                aria-label={item.label}
-                title={item.label}
-              >
-                <span className="h-8 w-8 rounded bg-zinc-500/60 shrink-0" />
-                <span className="text-sm font-medium">{item.label}</span>
-              </button>
-            );
-          })}
-        </div>
+      <AdminSidebar />
 
-        <button
-          onClick={logout}
-          className="w-full rounded-md bg-orange-500 hover:bg-orange-400 transition flex items-center gap-3 px-2 py-2 mt-2"
-          aria-label="Logout"
-          title="Logout"
-        >
-          <span className="h-8 w-8 rounded bg-black/20 shrink-0" />
-          <span className="text-sm font-semibold">Logout</span>
-        </button>
-      </aside>
-
-      {/* Main content */}
+      {/* Main: left column (drop + pages) + right column (page viewer) */}
       <main
-        className="flex-1 p-8"
+        className="flex-1 flex min-h-0 p-4 gap-4"
         onDragEnter={(e) => {
-          if (active !== "past-papers") return;
           e.preventDefault();
           setIsDragging(true);
         }}
         onDragOver={(e) => {
-          if (active !== "past-papers") return;
           e.preventDefault();
           setIsDragging(true);
         }}
         onDragLeave={(e) => {
-          if (active !== "past-papers") return;
           e.preventDefault();
-          // Only clear if leaving the whole panel, not moving between children
           if (e.currentTarget.contains(e.relatedTarget as Node)) return;
           setIsDragging(false);
         }}
         onDrop={handleDrop}
       >
-        {active === "past-papers" ? (
-          <div className="h-full min-h-[70vh] rounded-2xl border border-zinc-800 bg-zinc-950/40 p-6 relative overflow-hidden">
-            <div className="flex items-baseline justify-between gap-6">
-              <div>
-                <h1 className="text-3xl font-semibold tracking-tight">
-                  Past papers
-                </h1>
-                <p className="mt-2 text-sm text-zinc-400">
-                  Upload PDFs, then convert pages to PNGs to browse them.
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={testOpenAi}
-                  disabled={openAiStatus === "testing"}
-                  className={`rounded-md px-3 py-2 text-xs font-semibold transition ${
-                    openAiStatus === "ok"
-                      ? "bg-emerald-400 text-black hover:bg-emerald-300"
-                      : openAiStatus === "error"
-                      ? "bg-rose-400 text-black hover:bg-rose-300"
-                      : "bg-zinc-200 text-black hover:bg-white"
-                  } disabled:opacity-60 disabled:cursor-not-allowed`}
-                  title="Test OpenAI API key"
-                >
-                  {openAiStatus === "testing"
-                    ? "Testing OpenAI..."
-                    : openAiStatus === "ok"
-                    ? "OpenAI OK"
-                    : openAiStatus === "error"
-                    ? "OpenAI Error"
-                    : "Test OpenAI"}
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  multiple
-                  className="hidden"
-                  onChange={handleFileInputChange}
-                />
-                <button
-                  type="button"
-                  onClick={handleChooseFiles}
-                  disabled={isUploading}
-                  className="rounded-md bg-zinc-200 px-3 py-2 text-xs font-semibold text-black hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  Choose files
-                </button>
-                <div className="text-sm text-zinc-300 min-w-[12ch] text-right">
-                  {isUploading ? `Uploading ${uploadingCount}...` : null}
-                </div>
-              </div>
-            </div>
+        {/* Left column: drop zone + PDF list + Convert + page list */}
+        <div className="w-72 shrink-0 min-h-0 flex flex-col gap-3 overflow-hidden border border-zinc-800 rounded-xl bg-zinc-950/60 p-4 max-h-[calc(100vh-2rem)]">
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            className={`rounded-lg border-2 border-dashed flex flex-col items-center justify-center py-8 px-4 cursor-pointer transition ${
+              isDragging
+                ? "border-emerald-400 bg-emerald-500/10"
+                : "border-zinc-600 bg-zinc-900/40 hover:border-zinc-500 hover:bg-zinc-800/40"
+            }`}
+          >
+            <p className="text-sm font-medium text-zinc-300 text-center">
+              Drag and drop PDFs here
+            </p>
+            <p className="text-xs text-zinc-500 mt-1">or click to choose files</p>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            multiple
+            className="hidden"
+            onChange={handleFileInputChange}
+          />
 
-            {openAiMessage && (
-              <div
-                className={`mt-3 rounded-lg border px-4 py-3 text-sm ${
-                  openAiStatus === "ok"
-                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-                    : "border-rose-500/40 bg-rose-500/10 text-rose-200"
-                }`}
+          {isUploading && (
+            <p className="text-xs text-zinc-400">Uploading {uploadingCount} PDF(s)...</p>
+          )}
+
+          {papers.length > 0 && (
+            <>
+              <div className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                Uploaded PDFs
+              </div>
+              <div className="space-y-1 max-h-24 overflow-auto">
+                {papers.map((p) => {
+                  const isSelected = selectedPaper?.path === p.path;
+                  return (
+                    <button
+                      key={p.path}
+                      type="button"
+                      onClick={() => setSelectedPaper(p)}
+                      className={`w-full text-left rounded px-2 py-1.5 text-xs truncate transition ${
+                        isSelected ? "bg-emerald-500/20 text-emerald-200" : "hover:bg-zinc-800"
+                      }`}
+                      title={p.name}
+                    >
+                      {p.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={convertSelectedPdfToPngs}
+                disabled={!selectedPaper || isConverting}
+                className="rounded-md bg-emerald-500 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {openAiMessage}
-              </div>
-            )}
+                {isConverting && convertProgress
+                  ? `Converting ${convertProgress.page}/${convertProgress.total}...`
+                  : "Convert to PNGs"}
+              </button>
+            </>
+          )}
 
-            {uploadError && (
-              <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-                {uploadError}
-              </div>
-            )}
-
-            <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Left: PDF list */}
-              <div className="lg:col-span-1">
-                <div className="text-sm font-semibold text-zinc-200 mb-2">
-                  Uploaded PDFs
-                </div>
-                <div className="space-y-2 max-h-[55vh] overflow-auto pr-1">
-                  {papers.length > 0 ? (
-                    papers.map((p) => {
-                      const isSelected = selectedPaper?.path === p.path;
-                      return (
-                        <button
-                          key={p.path}
-                          onClick={() => setSelectedPaper(p)}
-                          className={`w-full text-left rounded-lg border px-3 py-2 transition ${
-                            isSelected
-                              ? "border-emerald-400 bg-emerald-500/10"
-                              : "border-zinc-800 bg-black/30 hover:bg-black/40"
-                          }`}
-                        >
-                          <div className="truncate text-sm font-medium">{p.name}</div>
-                          <div className="truncate text-xs text-zinc-500">{p.path}</div>
-                        </button>
-                      );
-                    })
+          <div className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mt-1 shrink-0">
+            Pages
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-2 overscroll-contain">
+            {pages.length > 0 ? (
+              pages.map((pg) => (
+                <button
+                  key={pg.path}
+                  type="button"
+                  onClick={() => {
+                    setSelectedPage(pg);
+                    setCrop(null);
+                  }}
+                  className={`w-full rounded-lg border px-2 py-2 text-left transition ${
+                    selectedPage?.path === pg.path
+                      ? "border-emerald-400 bg-emerald-500/10"
+                      : "border-zinc-800 bg-zinc-800/30 hover:bg-zinc-800/50"
+                  }`}
+                >
+                  <div className="text-xs text-zinc-300 mb-1">Page {pg.pageNumber}</div>
+                  {pg.url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={pg.url}
+                      alt={`Page ${pg.pageNumber}`}
+                      className="w-full h-auto rounded max-h-48 object-contain"
+                      loading="lazy"
+                    />
                   ) : (
-                    <div className="text-sm text-zinc-500">
-                      No PDFs yet. Upload one above.
-                    </div>
+                    <div className="text-xs text-zinc-500">No preview</div>
                   )}
-                </div>
+                </button>
+              ))
+            ) : (
+              <p className="text-xs text-zinc-500 py-2">
+                {selectedPaper ? "Convert PDF to see pages." : "Select a PDF above."}
+              </p>
+            )}
+          </div>
+        </div>
 
+        {/* Right column: full page + crop + extract + confirm */}
+        <div className="flex-1 min-w-0 flex flex-col rounded-xl border border-zinc-800 bg-zinc-950/60 p-4 relative overflow-hidden">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h1 className="text-lg font-semibold text-zinc-100 truncate">
+              {selectedPage ? `Page ${selectedPage.pageNumber}` : "Past papers"}
+            </h1>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={testOpenAi}
+                disabled={openAiStatus === "testing"}
+                className={`rounded px-2 py-1.5 text-xs font-semibold ${
+                  openAiStatus === "ok"
+                    ? "bg-emerald-500/20 text-emerald-300"
+                    : openAiStatus === "error"
+                    ? "bg-rose-500/20 text-rose-300"
+                    : "bg-zinc-700 text-zinc-300"
+                }`}
+                title="Test OpenAI"
+              >
+                {openAiStatus === "testing" ? "..." : openAiStatus === "ok" ? "OpenAI OK" : "OpenAI"}
+              </button>
+              <button
+                type="button"
+                onClick={handleChooseFiles}
+                disabled={isUploading}
+                className="rounded px-2 py-1.5 text-xs font-semibold bg-zinc-600 text-zinc-200 hover:bg-zinc-500 disabled:opacity-50"
+              >
+                Choose files
+              </button>
+            </div>
+          </div>
+
+          {uploadError && (
+            <div className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {uploadError}
+            </div>
+          )}
+          {openAiMessage && (
+            <div
+              className={`mb-2 rounded-lg border px-3 py-2 text-xs ${
+                openAiStatus === "ok"
+                  ? "border-emerald-500/40 text-emerald-200"
+                  : "border-rose-500/40 text-rose-200"
+              }`}
+            >
+              {openAiMessage}
+            </div>
+          )}
+
+          {pages.length > 0 && selectedPage?.url ? (
+            <div className="flex-1 min-h-0 flex flex-col gap-3">
+              {/* PROBLEM: extracted preview at top */}
+              {extracted.length > 0 && (
+                <div className="shrink-0 rounded-lg border border-zinc-700 bg-zinc-900/50 p-2">
+                  <div className="text-xs font-semibold text-zinc-400 mb-2">Extracted problem</div>
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {extracted.slice(0, 4).map((p) => (
+                      <a
+                        key={p.path}
+                        href={p.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="shrink-0 w-24 h-24 rounded border border-zinc-700 overflow-hidden hover:border-emerald-500"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={p.url} alt="" className="w-full h-full object-contain" />
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Crop tools */}
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={convertSelectedPdfToPngs}
-                  disabled={!selectedPaper || isConverting}
-                  className="mt-3 w-full rounded-md bg-emerald-400 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-300 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                  onClick={suggestCrop}
+                  className="rounded-md bg-zinc-600 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-500"
                 >
-                  {isConverting
-                    ? convertProgress
-                      ? `Converting ${convertProgress.page}/${convertProgress.total}...`
-                      : "Converting..."
-                    : "Convert selected PDF to PNGs"}
+                  Suggest crop
                 </button>
-                <p className="mt-2 text-xs text-zinc-500">
-                  Pages upload to `{PAST_PAPERS_BUCKET}/pages/...`
-                </p>
+                <button
+                  type="button"
+                  onClick={suggestCropWithAi}
+                  disabled={isAiCropping}
+                  className="rounded-md bg-violet-500 px-3 py-2 text-xs font-semibold text-black hover:bg-violet-400 disabled:opacity-50"
+                >
+                  {isAiCropping ? "Analysing..." : "Crop with AI"}
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmCrop}
+                  disabled={!crop || isExtracting}
+                  className="rounded-md bg-emerald-500 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-400 disabled:opacity-50"
+                >
+                  {isExtracting ? "Extracting..." : "Confirm crop"}
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmProblem}
+                  disabled={extracted.length === 0 || isConfirmingProblem}
+                  className="rounded-md bg-amber-500 px-3 py-2 text-xs font-semibold text-black hover:bg-amber-400 disabled:opacity-50"
+                >
+                  {isConfirmingProblem ? "Saving..." : "Confirm problem"}
+                </button>
               </div>
 
-              {/* Right: Page browser */}
-              <div className="lg:col-span-2">
-                <div className="text-sm font-semibold text-zinc-200 mb-2">
-                  Pages
+              {/* Full page with crop overlay (NOT PROBLEM area) */}
+              <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto">
+                <div
+                  ref={pagePreviewRef}
+                  className="relative inline-block max-h-[85vh] w-max"
+                >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={selectedPage.url}
+                      alt="Selected page"
+                      className="max-h-[85vh] w-auto block rounded-lg select-none"
+                      draggable={false}
+                    />
+
+                    {crop && (
+                      <div
+                        onMouseDown={startMove}
+                        className="absolute border-2 border-dashed border-emerald-300 bg-emerald-400/10 cursor-move"
+                        style={{
+                          left: `${crop.x * 100}%`,
+                          top: `${crop.y * 100}%`,
+                          width: `${crop.w * 100}%`,
+                          height: `${crop.h * 100}%`,
+                        }}
+                      >
+                        <div
+                          onMouseDown={startResize("nw")}
+                          className="absolute -left-2 -top-2 h-4 w-4 rounded bg-emerald-300 cursor-nwse-resize"
+                        />
+                        <div
+                          onMouseDown={startResize("ne")}
+                          className="absolute -right-2 -top-2 h-4 w-4 rounded bg-emerald-300 cursor-nesw-resize"
+                        />
+                        <div
+                          onMouseDown={startResize("sw")}
+                          className="absolute -left-2 -bottom-2 h-4 w-4 rounded bg-emerald-300 cursor-nesw-resize"
+                        />
+                        <div
+                          onMouseDown={startResize("se")}
+                          className="absolute -right-2 -bottom-2 h-4 w-4 rounded bg-emerald-300 cursor-nwse-resize"
+                        />
+                      </div>
+                    )}
                 </div>
-
-                {pages.length > 0 ? (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {/* Thumbnails */}
-                    <div className="md:col-span-1 max-h-[55vh] overflow-auto pr-1 space-y-2">
-                      {pages.map((pg) => (
-                        <button
-                          key={pg.path}
-                          onClick={() => {
-                            setSelectedPage(pg);
-                            setCrop(null);
-                          }}
-                          className={`w-full rounded-lg border px-2 py-2 text-left transition ${
-                            selectedPage?.path === pg.path
-                              ? "border-emerald-400 bg-emerald-500/10"
-                              : "border-zinc-800 bg-black/30 hover:bg-black/40"
-                          }`}
-                        >
-                          <div className="text-xs text-zinc-300 mb-2">
-                            Page {pg.pageNumber}
-                          </div>
-                          {pg.url ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={pg.url}
-                              alt={`Page ${pg.pageNumber}`}
-                              className="w-full h-auto rounded-md"
-                              loading="lazy"
-                            />
-                          ) : (
-                            <div className="text-xs text-zinc-500">No preview URL</div>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* Large preview */}
-                    <div className="md:col-span-2 rounded-xl border border-zinc-800 bg-black/30 p-3 flex items-center justify-center min-h-[55vh]">
-                      {selectedPage?.url ? (
-                        <div className="w-full h-full flex flex-col gap-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="text-xs text-zinc-400">
-                              Page {selectedPage.pageNumber}
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={suggestCrop}
-                                className="rounded-md bg-zinc-200 px-3 py-2 text-xs font-semibold text-black hover:bg-white transition"
-                              >
-                                Suggest crop
-                              </button>
-                              <button
-                                type="button"
-                                onClick={confirmCrop}
-                                disabled={!crop || isExtracting}
-                                className="rounded-md bg-emerald-400 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-300 transition disabled:opacity-60 disabled:cursor-not-allowed"
-                              >
-                                {isExtracting ? "Extracting..." : "Confirm crop"}
-                              </button>
-                            </div>
-                          </div>
-
-                          <div
-                            ref={pagePreviewRef}
-                            className="relative flex-1 min-h-[45vh] flex items-center justify-center"
-                          >
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={selectedPage.url}
-                              alt="Selected page"
-                              className="max-h-[45vh] w-auto object-contain rounded-lg select-none"
-                              draggable={false}
-                            />
-
-                            {crop && (
-                              <div
-                                onMouseDown={startMove}
-                                className="absolute border-2 border-dashed border-emerald-300 bg-emerald-400/10 cursor-move"
-                                style={{
-                                  left: `${crop.x * 100}%`,
-                                  top: `${crop.y * 100}%`,
-                                  width: `${crop.w * 100}%`,
-                                  height: `${crop.h * 100}%`,
-                                }}
-                              >
-                                {/* Handles */}
-                                <div
-                                  onMouseDown={startResize("nw")}
-                                  className="absolute -left-2 -top-2 h-4 w-4 rounded bg-emerald-300 cursor-nwse-resize"
-                                />
-                                <div
-                                  onMouseDown={startResize("ne")}
-                                  className="absolute -right-2 -top-2 h-4 w-4 rounded bg-emerald-300 cursor-nesw-resize"
-                                />
-                                <div
-                                  onMouseDown={startResize("sw")}
-                                  className="absolute -left-2 -bottom-2 h-4 w-4 rounded bg-emerald-300 cursor-nesw-resize"
-                                />
-                                <div
-                                  onMouseDown={startResize("se")}
-                                  className="absolute -right-2 -bottom-2 h-4 w-4 rounded bg-emerald-300 cursor-nwse-resize"
-                                />
-                              </div>
-                            )}
-                          </div>
-
-                          {extracted.length > 0 && (
-                            <div className="mt-2">
-                              <div className="text-xs font-semibold text-zinc-200 mb-2">
-                                Extracted problems
-                              </div>
-                              <div className="grid grid-cols-2 gap-2">
-                                {extracted.slice(0, 4).map((p) => (
-                                  <a
-                                    key={p.path}
-                                    href={p.url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="rounded-lg border border-zinc-800 bg-black/30 p-2 hover:bg-black/40 transition"
-                                  >
-                                    <div className="text-[11px] text-zinc-400 mb-1">
-                                      From page {p.fromPage}
-                                    </div>
-                                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                                    <img
-                                      src={p.url}
-                                      alt="Extracted problem"
-                                      className="w-full h-auto rounded-md"
-                                      loading="lazy"
-                                    />
-                                  </a>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="text-sm text-zinc-500">
-                          Select a page to preview.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-sm text-zinc-500">
-                    Select a PDF, convert it, then pages will appear here.
-                  </div>
-                )}
               </div>
             </div>
 
-            {/* Drag overlay */}
-            {isDragging && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-emerald-500/10 border-2 border-emerald-400 rounded-2xl">
-                <div className="text-center">
-                  <div className="text-2xl font-semibold">Drop your PDFs</div>
-                  <div className="mt-2 text-sm text-zinc-200">
-                    Upload past papers to your library
-                  </div>
-                </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-zinc-500 text-sm">
+              Drop a PDF on the left, convert it, then select a page to crop and extract problems.
+            </div>
+          )}
+
+          {/* Drag overlay */}
+          {isDragging && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-emerald-500/10 border-2 border-emerald-400 rounded-xl z-10">
+              <div className="text-center">
+                <div className="text-xl font-semibold">Drop your PDFs</div>
+                <div className="mt-1 text-sm text-zinc-300">Upload past papers</div>
               </div>
-            )}
-          </div>
-        ) : (
-          <div>
-            <h1 className="text-3xl font-semibold tracking-tight capitalize">
-              {active}
-            </h1>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );

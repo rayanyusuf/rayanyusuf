@@ -1,31 +1,56 @@
 import { NextResponse } from "next/server";
 import path from "path";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 
-/** Try to get project root: cwd first, then from this file's location. */
+/** Try to get project root: cwd first, then from this file's location (various bundle depths). */
 function getProjectRoots(): string[] {
   const roots = [process.cwd()];
   try {
     const dir = path.dirname(fileURLToPath(import.meta.url));
-    roots.push(path.resolve(dir, "..", "..", "..", "..", ".."));
+    for (let up = 4; up <= 8; up++) {
+      const parts = Array(up).fill("..");
+      roots.push(path.resolve(dir, ...parts));
+    }
   } catch {
     // ignore
   }
   return [...new Set(roots)];
 }
 
+/** Last resort: find OpenAI key (sk-proj-...) in .env.local, try multiple encodings. */
+function readKeyFromEnvFile(envPath: string): string | undefined {
+  const encodings: BufferEncoding[] = ["utf-8", "utf16le", "latin1"];
+  for (const enc of encodings) {
+    try {
+      let content: string;
+      if (enc === "utf-8") {
+        content = readFileSync(envPath, "utf-8");
+      } else {
+        content = readFileSync(envPath, { encoding: enc });
+      }
+      if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
+      const match = content.match(/sk-proj-\S+/);
+      if (match) return match[0];
+    } catch {
+      // try next encoding
+    }
+  }
+  return undefined;
+}
+
 function getApiKey(): string | undefined {
   let apiKey = process.env.OPEN_AI_API_KEY ?? process.env.OPENAI_API_KEY;
   if (apiKey) return apiKey;
-  // Next.js may not load .env.local in some setups; load it with dotenv
   for (const root of getProjectRoots()) {
     const envPath = path.join(root, ".env.local");
     if (!existsSync(envPath)) continue;
     const result = dotenv.config({ path: envPath });
     const parsed = result.parsed as Record<string, string> | undefined;
     apiKey = parsed?.OPEN_AI_API_KEY ?? parsed?.OPENAI_API_KEY;
+    if (apiKey) return apiKey;
+    apiKey = readKeyFromEnvFile(envPath);
     if (apiKey) return apiKey;
   }
   return undefined;

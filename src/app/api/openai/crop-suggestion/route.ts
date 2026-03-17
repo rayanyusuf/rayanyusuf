@@ -1,0 +1,190 @@
+import { NextResponse } from "next/server";
+import path from "path";
+import { existsSync, readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+
+function getProjectRoots(): string[] {
+  const roots = [process.cwd()];
+  try {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    for (let up = 4; up <= 8; up++) {
+      const parts = Array(up).fill("..");
+      roots.push(path.resolve(dir, ...parts));
+    }
+  } catch {
+    // ignore
+  }
+  return [...new Set(roots)];
+}
+
+/** Last resort: find OpenAI key (sk-proj-...) in .env.local, try multiple encodings. */
+function readKeyFromEnvFile(envPath: string): string | undefined {
+  const encodings: BufferEncoding[] = ["utf-8", "utf16le", "latin1"];
+  for (const enc of encodings) {
+    try {
+      let content: string;
+      if (enc === "utf-8") {
+        content = readFileSync(envPath, "utf-8");
+      } else {
+        content = readFileSync(envPath, { encoding: enc });
+      }
+      if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
+      const match = content.match(/sk-proj-\S+/);
+      if (match) return match[0];
+    } catch {
+      // try next encoding
+    }
+  }
+  return undefined;
+}
+
+function getApiKey(): string | undefined {
+  let apiKey = process.env.OPEN_AI_API_KEY ?? process.env.OPENAI_API_KEY;
+  if (apiKey) return apiKey;
+  for (const root of getProjectRoots()) {
+    const envPath = path.join(root, ".env.local");
+    if (!existsSync(envPath)) continue;
+    const result = dotenv.config({ path: envPath });
+    const parsed = result.parsed as Record<string, string> | undefined;
+    apiKey = parsed?.OPEN_AI_API_KEY ?? parsed?.OPENAI_API_KEY;
+    if (apiKey) return apiKey;
+    apiKey = readKeyFromEnvFile(envPath);
+    if (apiKey) return apiKey;
+  }
+  return undefined;
+}
+
+const CROP_PROMPT = `You are a crop assistant. This image is one page from an exam or past paper. Find the bounding box (as fractions 0-1) that contains ONLY the main or first question on the page. Exclude headers, footers, page numbers and other questions.
+
+Reply with exactly one line: a JSON object with keys "x", "y", "w", "h" (no markdown, no code block, no explanation). Example: {"x":0.1,"y":0.2,"w":0.8,"h":0.5}`;
+
+export async function POST(request: Request) {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "Missing API key. Set OPEN_AI_API_KEY in .env.local." },
+      { status: 500 }
+    );
+  }
+
+  let body: { imageBase64?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid JSON body. Send { imageBase64: string }." },
+      { status: 400 }
+    );
+  }
+
+  const imageBase64 = body?.imageBase64;
+  if (!imageBase64 || typeof imageBase64 !== "string") {
+    return NextResponse.json(
+      { error: "Missing imageBase64 in body." },
+      { status: 400 }
+    );
+  }
+
+  const url =
+    imageBase64.startsWith("data:")
+      ? imageBase64
+      : `data:image/png;base64,${imageBase64}`;
+
+  try {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        max_tokens: 500,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: CROP_PROMPT },
+              { type: "image_url", image_url: { url } },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return NextResponse.json(
+        { error: `OpenAI error (${res.status}): ${text}` },
+        { status: 500 }
+      );
+    }
+
+    const data = (await res.json()) as {
+      choices?: {
+        message?: {
+          content?: string | { type: string; text?: string }[];
+        };
+      }[];
+    };
+    let content: string | undefined;
+    const raw = data?.choices?.[0]?.message?.content;
+    if (typeof raw === "string") {
+      content = raw.trim();
+    } else if (Array.isArray(raw)) {
+      const textPart = raw.find((p) => p?.type === "text" && p?.text);
+      content = textPart && "text" in textPart ? String(textPart.text).trim() : undefined;
+    }
+    if (!content) {
+      return NextResponse.json(
+        { error: "No crop suggestion in OpenAI response." },
+        { status: 500 }
+      );
+    }
+
+    // Extract JSON object with x,y,w,h from content (model may add explanation or markdown)
+    const jsonMatch = content.match(
+      /\{\s*["']?x["']?\s*:\s*[\d.]+\s*,\s*["']?y["']?\s*:\s*[\d.]+\s*,\s*["']?w["']?\s*:\s*[\d.]+\s*,\s*["']?h["']?\s*:\s*[\d.]+\s*\}/
+    );
+    let jsonStr = jsonMatch
+      ? jsonMatch[0]
+      : content.replace(/^```\w*\n?|\n?```$/g, "").trim();
+    // If still no clear object, try parsing the whole content
+    let parsed: { x?: number; y?: number; w?: number; h?: number };
+    try {
+      parsed = JSON.parse(jsonStr) as { x?: number; y?: number; w?: number; h?: number; crop?: { x?: number; y?: number; w?: number; h?: number } };
+    } catch {
+      parsed = JSON.parse(content) as { x?: number; y?: number; w?: number; h?: number; crop?: { x?: number; y?: number; w?: number; h?: number } };
+    }
+    const box = parsed.crop ?? parsed;
+    const x = Number(box.x);
+    const y = Number(box.y);
+    const w = Number(box.w);
+    const h = Number(box.h);
+
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) {
+      return NextResponse.json(
+        { error: "OpenAI returned invalid crop numbers." },
+        { status: 500 }
+      );
+    }
+
+    const clamp = (n: number, min: number, max: number) =>
+      Math.max(min, Math.min(max, n));
+    const crop = {
+      x: clamp(x, 0, 1),
+      y: clamp(y, 0, 1),
+      w: clamp(w, 0.05, 1),
+      h: clamp(h, 0.05, 1),
+    };
+    if (crop.x + crop.w > 1) crop.w = 1 - crop.x;
+    if (crop.y + crop.h > 1) crop.h = 1 - crop.y;
+
+    return NextResponse.json({ crop });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
