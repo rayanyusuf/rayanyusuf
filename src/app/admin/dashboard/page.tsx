@@ -70,6 +70,74 @@ export default function AdminDashboardPage() {
   const [extracted, setExtracted] = useState<
     { name: string; path: string; url?: string; fromPage: number }[]
   >([]);
+  const [confirmedProblemIds, setConfirmedProblemIds] = useState<Set<string>>(new Set());
+  const [savedPagesThisSession, setSavedPagesThisSession] = useState<Set<number>>(new Set());
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const blobUrlMapRef = useRef<Map<string, string>>(new Map());
+
+  const logDebug = (msg: string) => {
+    const line = `[${new Date().toISOString().slice(11, 19)}] ${msg}`;
+    // eslint-disable-next-line no-console
+    console.log(line);
+    setDebugLogs((prev) => [line, ...prev].slice(0, 50));
+  };
+
+  const revokeBlobUrl = (path: string) => {
+    const m = blobUrlMapRef.current;
+    const existing = m.get(path);
+    if (existing) {
+      try {
+        URL.revokeObjectURL(existing);
+      } catch {
+        // ignore
+      }
+      m.delete(path);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      // cleanup blob URLs
+      for (const url of blobUrlMapRef.current.values()) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
+      blobUrlMapRef.current.clear();
+    };
+  }, []);
+
+  const resolvePreviewUrl = async (path: string) => {
+    // 1) signed URL
+    const signedRes = await supabase.storage
+      .from(PAST_PAPERS_BUCKET)
+      .createSignedUrl(path, 60 * 60);
+    if (signedRes.error) {
+      logDebug(`signedUrl FAIL for ${path}: ${signedRes.error.message}`);
+    } else if (signedRes.data?.signedUrl) {
+      logDebug(`signedUrl OK for ${path}`);
+      return signedRes.data.signedUrl;
+    }
+
+    // 2) try direct download and use blob: URL
+    const dl = await supabase.storage.from(PAST_PAPERS_BUCKET).download(path);
+    if (dl.error || !dl.data) {
+      logDebug(`download FAIL for ${path}: ${dl.error?.message ?? "no data"}`);
+    } else {
+      revokeBlobUrl(path);
+      const blobUrl = URL.createObjectURL(dl.data);
+      blobUrlMapRef.current.set(path, blobUrl);
+      logDebug(`download OK -> blobUrl for ${path}`);
+      return blobUrl;
+    }
+
+    // 3) public URL fallback (may be broken for private buckets)
+    const publicUrl = supabase.storage.from(PAST_PAPERS_BUCKET).getPublicUrl(path).data.publicUrl;
+    logDebug(`publicUrl fallback for ${path}: ${publicUrl}`);
+    return publicUrl;
+  };
 
   useEffect(() => {
     try {
@@ -85,6 +153,22 @@ export default function AdminDashboardPage() {
   }, [router]);
 
   const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+
+  /**
+   * Standard formats:
+   * - paper id:  Further-Maths-2022-paper-1
+   * - problem id: Further-Maths-2022-paper-1-Question-4
+   */
+  const getPaperMeta = (paperName: string) => {
+    const base = paperName.replace(/\.pdf$/i, "").trim();
+    const yearMatch = base.match(/\b(20\d{2})\b/);
+    const year = yearMatch ? yearMatch[1]! : new Date().getFullYear().toString();
+    // Only trust an explicit "Paper N" in the filename; QP (n) is not reliable for paper number.
+    const paperMatch = base.match(/\bPaper\s*(\d+)\b/i);
+    const paperNum = paperMatch ? (paperMatch[1] ?? "1") : "1";
+    const paperId = `Further-Maths-${year}-paper-${paperNum}`;
+    return { year, paperNum, paperId };
+  };
 
   const getPreviewSize = () => {
     const el = pagePreviewRef.current;
@@ -275,6 +359,12 @@ export default function AdminDashboardPage() {
       .replace(/[^\w.\-]+/g, "_")
       .replace(/_+/g, "_")
       .replace(/^_+|_+$/g, "");
+    const { paperId } = getPaperMeta(selectedPaper.name);
+    const safePaperId = paperId
+      .trim()
+      .replace(/[^\w.\-]+/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_+|_+$/g, "");
 
     setSafeSelectedPaperBase(safePaperBase);
     setUploadError(null);
@@ -283,26 +373,35 @@ export default function AdminDashboardPage() {
     setCrop(null);
 
     const loadPages = async () => {
-      const folder = `pages/${safePaperBase}`;
-
-      const { data, error } = await supabase.storage
-        .from(PAST_PAPERS_BUCKET)
-        .list(folder, { limit: 1000, offset: 0, sortBy: { column: "name", order: "asc" } });
-
-      if (error) return;
+      const tryFolders = [`pages/${safePaperId}`, `pages/${safePaperBase}`];
+      let data: { name: string }[] | null = null;
+      let chosenFolderBase: string | null = null;
+      for (const folder of tryFolders) {
+        const res = await supabase.storage
+          .from(PAST_PAPERS_BUCKET)
+          .list(folder, { limit: 1000, offset: 0, sortBy: { column: "name", order: "asc" } });
+        if (res.error) continue;
+        if (res.data && res.data.length > 0) {
+          data = res.data as unknown as { name: string }[];
+          // store which folder we’re using for conversions too
+          chosenFolderBase = folder.replace(/^pages\//, "");
+          setSafeSelectedPaperBase(chosenFolderBase);
+          break;
+        }
+      }
       if (!data || data.length === 0) return;
 
-      const parsed = data
-        .filter((o) => o.name.toLowerCase().endsWith(".png"))
-        .map((o) => {
+      const folderBase = chosenFolderBase ?? safePaperId;
+      const pngs = data.filter((o) => o.name.toLowerCase().endsWith(".png"));
+      const parsed = (await Promise.all(
+        pngs.map(async (o) => {
           const match = o.name.match(/page-(\d+)\.png$/i);
           const pageNumber = match ? Number(match[1]) : 0;
-          const path = `${folder}/${o.name}`;
-          const { data: publicData } = supabase.storage
-            .from(PAST_PAPERS_BUCKET)
-            .getPublicUrl(path);
-          return { pageNumber, path, url: publicData.publicUrl };
+          const path = `pages/${folderBase}/${o.name}`;
+          const url = await resolvePreviewUrl(path);
+          return { pageNumber, path, url };
         })
+      ))
         .filter((p) => p.pageNumber > 0)
         .sort((a, b) => a.pageNumber - b.pageNumber);
 
@@ -313,6 +412,39 @@ export default function AdminDashboardPage() {
     };
 
     loadPages();
+  }, [selectedPaper]);
+
+  // When a paper is selected, load confirmed problems so we can avoid duplicates.
+  useEffect(() => {
+    if (!selectedPaper) {
+      setConfirmedProblemIds(new Set());
+      setSavedPagesThisSession(new Set());
+      return;
+    }
+
+    const loadConfirmed = async () => {
+      const { paperId } = getPaperMeta(selectedPaper.name);
+      const prefix = `${paperId}-Question-`;
+
+      const { data, error } = await supabase
+        .from("problems")
+        .select("problem_id")
+        .like("problem_id", `${prefix}%`)
+        .limit(2000);
+
+      if (error) {
+        // don't block UI; just don't show badges
+        setConfirmedProblemIds(new Set());
+        return;
+      }
+
+      const ids = new Set<string>(
+        (data as { problem_id: string }[] | null | undefined)?.map((r) => r.problem_id) ?? []
+      );
+      setConfirmedProblemIds(ids);
+    };
+
+    loadConfirmed();
   }, [selectedPaper]);
 
   const logout = () => {
@@ -369,10 +501,69 @@ export default function AdminDashboardPage() {
         { path: string; name: string; url?: string }
       >(
         pdfs.map(async (file) => {
-          const safeName = file.name.replace(/[^\w.\-() ]+/g, "_");
-          // Add randomness so multiple files dropped at once never collide
-          const random = Math.random().toString(16).slice(2);
-          const path = `uploads/${Date.now()}-${random}-${safeName}`;
+          // Render first page to PNG and ask AI for {year, paper} to standardize name
+          let standardName: string | null = null;
+          // First try to parse from filename (fast + reliable when name contains year/paper)
+          try {
+            const base = file.name.replace(/\.pdf$/i, "").trim();
+            const yearMatch = base.match(/\b(20\d{2})\b/);
+            const paperMatch = base.match(/\bPaper\s*(\d+)\b/i);
+            const year = yearMatch ? Number(yearMatch[1]) : NaN;
+            const paper = paperMatch ? Number(paperMatch[1]) : 1;
+            if (Number.isFinite(year)) {
+              standardName = `Further-Maths-${year}-Paper-${paper}.pdf`;
+            }
+          } catch {
+            // ignore
+          }
+          try {
+            if (!standardName) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdfjs = await import("pdfjs-dist");
+            const { GlobalWorkerOptions, getDocument } = pdfjs;
+            GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
+            const loadingTask = getDocument({ data: arrayBuffer });
+            const pdf = await loadingTask.promise;
+            const page = await pdf.getPage(1);
+            const viewport = page.getViewport({ scale: 1.5 });
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            if (!ctx) throw new Error("Canvas not supported.");
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
+            await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+            const pngBlob: Blob = await new Promise((resolve, reject) => {
+              canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("PNG export failed."))), "image/png");
+            });
+            const base64 = await new Promise<string>((resolve, reject) => {
+              const r = new FileReader();
+              r.onload = () => {
+                const dataUrl = r.result as string;
+                const b = dataUrl.indexOf(",") >= 0 ? dataUrl.split(",")[1] : dataUrl;
+                resolve(b ?? "");
+              };
+              r.onerror = () => reject(new Error("Failed to read image."));
+              r.readAsDataURL(pngBlob);
+            });
+            const res = await fetch("/api/openai/paper-meta", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ imageBase64: base64 }),
+            });
+            const json = (await res.json().catch(() => ({}))) as { year?: number; paper?: number; error?: string };
+            if (res.ok && json.year && json.paper) {
+              standardName = `Further-Maths-${json.year}-Paper-${json.paper}.pdf`;
+            } else if (!res.ok && json?.error) {
+              // Non-fatal: still upload, but show why naming failed
+              setUploadError((prev) => prev ?? `Paper naming (AI) failed: ${json.error}`);
+            }
+            }
+          } catch {
+            // fallback below
+          }
+
+          const safeName = (standardName ?? file.name).replace(/[^\w.\-() ]+/g, "_");
+          let path = `uploads/${safeName}`;
 
           const { error } = await supabase.storage
             .from(PAST_PAPERS_BUCKET)
@@ -382,12 +573,24 @@ export default function AdminDashboardPage() {
             });
 
           if (error) {
-            // Common Supabase errors here are permission/policy related.
-            throw new Error(error.message);
+            // If name already exists, add a suffix (keeps base format recognizable)
+            if (error.message.toLowerCase().includes("exists") || error.message.toLowerCase().includes("duplicate")) {
+              const suffix = Math.random().toString(16).slice(2, 6);
+              const alt = safeName.replace(/\.pdf$/i, `-${suffix}.pdf`);
+              path = `uploads/${alt}`;
+              const retry = await supabase.storage.from(PAST_PAPERS_BUCKET).upload(path, file, {
+                contentType: "application/pdf",
+                upsert: false,
+              });
+              if (retry.error) throw new Error(retry.error.message);
+            } else {
+              // Common Supabase errors here are permission/policy related.
+              throw new Error(error.message);
+            }
           }
 
           const { data } = supabase.storage.from(PAST_PAPERS_BUCKET).getPublicUrl(path);
-          return { path, name: file.name, url: data.publicUrl };
+          return { path, name: safeName, url: data.publicUrl };
         })
       );
 
@@ -420,6 +623,58 @@ export default function AdminDashboardPage() {
     } finally {
       setIsUploading(false);
       setUploadingCount(0);
+    }
+  };
+
+  const deletePdf = async (p: { path: string; name: string }) => {
+    const ok = window.confirm(
+      `Delete this past paper?\n\n${p.name}\n\nThis deletes the PDF and all its converted page PNGs.`
+    );
+    if (!ok) return;
+    setUploadError(null);
+    try {
+      // Delete PDF
+      const { error: pdfErr } = await supabase.storage
+        .from(PAST_PAPERS_BUCKET)
+        .remove([p.path]);
+      if (pdfErr) throw new Error(pdfErr.message);
+
+      // Delete converted pages from both the new standardized folder and the legacy folder
+      const paperBase = p.name.replace(/\.pdf$/i, "");
+      const legacyBase = paperBase
+        .trim()
+        .replace(/[^\w.\-]+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+      const paperId = getPaperMeta(p.name).paperId
+        .trim()
+        .replace(/[^\w.\-]+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+
+      const folders = [`pages/${paperId}`, `pages/${legacyBase}`];
+      for (const folder of folders) {
+        const { data, error } = await supabase.storage
+          .from(PAST_PAPERS_BUCKET)
+          .list(folder, { limit: 1000, offset: 0, sortBy: { column: "name", order: "asc" } });
+        if (error || !data || data.length === 0) continue;
+        const toRemove = data.map((o) => `${folder}/${o.name}`);
+        const { error: rmErr } = await supabase.storage
+          .from(PAST_PAPERS_BUCKET)
+          .remove(toRemove);
+        if (rmErr) throw new Error(rmErr.message);
+      }
+
+      setPapers((prev) => prev.filter((x) => x.path !== p.path));
+      if (selectedPaper?.path === p.path) {
+        setSelectedPaper(null);
+        setPages([]);
+        setSelectedPage(null);
+        setCrop(null);
+        setExtracted([]);
+      }
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Delete failed.");
     }
   };
 
@@ -456,14 +711,13 @@ export default function AdminDashboardPage() {
       const totalPages: number = pdf.numPages;
       const safePaperBase =
         safeSelectedPaperBase ??
-        selectedPaper.name
-          .replace(/\.pdf$/i, "")
+        getPaperMeta(selectedPaper.name).paperId
           .trim()
           .replace(/[^\w.\-]+/g, "_")
           .replace(/_+/g, "_")
           .replace(/^_+|_+$/g, "");
-
-      const generated: { pageNumber: number; path: string; url?: string }[] = [];
+      // Ensure we keep using the same folder for later operations
+      setSafeSelectedPaperBase(safePaperBase);
 
       for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
         setConvertProgress({ page: pageNumber, total: totalPages });
@@ -500,11 +754,18 @@ export default function AdminDashboardPage() {
           .from(PAST_PAPERS_BUCKET)
           .getPublicUrl(path);
 
-        generated.push({ pageNumber, path, url: publicData.publicUrl });
+        const url = await resolvePreviewUrl(path);
+        const pageObj = { pageNumber, path, url };
+        // Append/update immediately so user can start cropping while conversion continues
+        setPages((prev) => {
+          const existingIdx = prev.findIndex((p) => p.pageNumber === pageNumber);
+          const next = existingIdx >= 0 ? [...prev] : [...prev, pageObj];
+          if (existingIdx >= 0) next[existingIdx] = pageObj;
+          next.sort((a, b) => a.pageNumber - b.pageNumber);
+          return next;
+        });
+        setSelectedPage((prev) => prev ?? pageObj);
       }
-
-      setPages(generated);
-      if (generated[0]) setSelectedPage(generated[0]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Conversion failed.";
       setUploadError(msg);
@@ -602,16 +863,11 @@ export default function AdminDashboardPage() {
     }
   };
 
-  /** Standardized problem_id: Further-maths-<year>-Paper-<paperNum>-<problemNum> */
+  /** Standardized problem_id: Further-Maths-<year>-paper-<paperNum>-Question-<questionNum> */
   const generateProblemId = (paperName: string, pageNumber: number): string => {
-    const base = paperName.replace(/\.pdf$/i, "").trim();
-    const yearMatch = base.match(/\b(20\d{2})\b/);
-    const year = yearMatch ? yearMatch[1]! : new Date().getFullYear().toString();
-    const paperMatch = base.match(/QP\s*\((\d+)\)|Paper\s*(\d+)|(\d+)\s*\.\s*pdf/i);
-    const paperNum = paperMatch ? (paperMatch[1] ?? paperMatch[2] ?? paperMatch[3] ?? "1") : "1";
-    const problemNum = String(pageNumber);
-    const safe = ["Further-maths", year, "Paper", paperNum, problemNum].join("-");
-    return safe.replace(/[^\w.-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "problem";
+    const { paperId } = getPaperMeta(paperName);
+    const questionNum = String(pageNumber);
+    return `${paperId}-Question-${questionNum}`;
   };
 
   const confirmProblem = async () => {
@@ -622,20 +878,43 @@ export default function AdminDashboardPage() {
     setIsConfirmingProblem(true);
 
     try {
-      const problemId = generateProblemId(selectedPaper.name, latest.fromPage);
-      const confirmedPath = `confirmed/${problemId}.png`;
-
-      const { data: blob, error: downErr } = await supabase.storage
+      // Determine question number from the extracted image (top-left of screenshot)
+      const { data: extractedBlob, error: extractedDownErr } = await supabase.storage
         .from(PROBLEM_IMAGES_BUCKET)
         .download(latest.path);
-
-      if (downErr || !blob) {
-        throw new Error(downErr?.message ?? "Failed to download extracted image.");
+      if (extractedDownErr || !extractedBlob) {
+        throw new Error(extractedDownErr?.message ?? "Failed to download extracted image.");
       }
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => {
+          const dataUrl = r.result as string;
+          const b = dataUrl.indexOf(",") >= 0 ? dataUrl.split(",")[1] : dataUrl;
+          resolve(b ?? "");
+        };
+        r.onerror = () => reject(new Error("Failed to read image."));
+        r.readAsDataURL(extractedBlob);
+      });
+
+      const qRes = await fetch("/api/openai/question-number", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64 }),
+      });
+      const qJson = (await qRes.json().catch(() => ({}))) as { question?: number; error?: string };
+      if (!qRes.ok || !qJson.question) {
+        throw new Error(qJson?.error ?? `Question detection failed (${qRes.status}).`);
+      }
+
+      const problemId = `${getPaperMeta(selectedPaper.name).paperId}-Question-${qJson.question}`;
+      if (confirmedProblemIds.has(problemId)) {
+        throw new Error(`Already saved: ${problemId}`);
+      }
+      const confirmedPath = `confirmed/${problemId}.png`;
 
       const { error: upErr } = await supabase.storage
         .from(PROBLEM_IMAGES_BUCKET)
-        .upload(confirmedPath, blob, { contentType: "image/png", upsert: true });
+        .upload(confirmedPath, extractedBlob, { contentType: "image/png", upsert: true });
 
       if (upErr) {
         throw new Error(upErr.message);
@@ -652,6 +931,16 @@ export default function AdminDashboardPage() {
 
       setUploadError(null);
       setExtracted((prev) => prev.filter((p) => p.path !== latest.path));
+      setConfirmedProblemIds((prev) => {
+        const next = new Set(prev);
+        next.add(problemId);
+        return next;
+      });
+      setSavedPagesThisSession((prev) => {
+        const next = new Set(prev);
+        next.add(latest.fromPage);
+        return next;
+      });
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Confirm problem failed.");
     } finally {
@@ -748,17 +1037,33 @@ export default function AdminDashboardPage() {
                 {papers.map((p) => {
                   const isSelected = selectedPaper?.path === p.path;
                   return (
-                    <button
+                    <div
                       key={p.path}
-                      type="button"
-                      onClick={() => setSelectedPaper(p)}
-                      className={`w-full text-left rounded px-2 py-1.5 text-xs truncate transition ${
+                      className={`w-full rounded px-2 py-1.5 text-xs transition flex items-center gap-2 ${
                         isSelected ? "bg-emerald-500/20 text-emerald-200" : "hover:bg-zinc-800"
                       }`}
                       title={p.name}
                     >
-                      {p.name}
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPaper(p)}
+                        className="flex-1 text-left truncate"
+                      >
+                        {p.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void deletePdf(p);
+                        }}
+                        className="shrink-0 rounded bg-rose-500/20 text-rose-200 border border-rose-400/30 px-2 py-1 hover:bg-rose-500/30"
+                        title="Delete PDF"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -781,6 +1086,9 @@ export default function AdminDashboardPage() {
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-2 overscroll-contain">
             {pages.length > 0 ? (
               pages.map((pg) => (
+                (() => {
+                  const isSaved = savedPagesThisSession.has(pg.pageNumber);
+                  return (
                 <button
                   key={pg.path}
                   type="button"
@@ -794,7 +1102,14 @@ export default function AdminDashboardPage() {
                       : "border-zinc-800 bg-zinc-800/30 hover:bg-zinc-800/50"
                   }`}
                 >
-                  <div className="text-xs text-zinc-300 mb-1">Page {pg.pageNumber}</div>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="text-xs text-zinc-300">Page {pg.pageNumber}</div>
+                    {isSaved ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 border border-emerald-400/30">
+                        Saved
+                      </span>
+                    ) : null}
+                  </div>
                   {pg.url ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
@@ -802,11 +1117,17 @@ export default function AdminDashboardPage() {
                       alt={`Page ${pg.pageNumber}`}
                       className="w-full h-auto rounded max-h-48 object-contain"
                       loading="lazy"
+                      onError={(e) => {
+                        const src = (e.currentTarget as HTMLImageElement).src;
+                        logDebug(`IMG onError page=${pg.pageNumber} path=${pg.path} src=${src}`);
+                      }}
                     />
                   ) : (
                     <div className="text-xs text-zinc-500">No preview</div>
                   )}
                 </button>
+                  );
+                })()
               ))
             ) : (
               <p className="text-xs text-zinc-500 py-2">
@@ -864,6 +1185,17 @@ export default function AdminDashboardPage() {
             >
               {openAiMessage}
             </div>
+          )}
+
+          {debugLogs.length > 0 && (
+            <details className="mb-2 rounded-lg border border-zinc-800 bg-black/30 px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold text-zinc-300">
+                Debug ({debugLogs.length})
+              </summary>
+              <div className="mt-2 max-h-40 overflow-auto text-[11px] text-zinc-400 whitespace-pre-wrap">
+                {debugLogs.join("\n")}
+              </div>
+            </details>
           )}
 
           {pages.length > 0 && selectedPage?.url ? (
