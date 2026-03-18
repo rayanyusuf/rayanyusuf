@@ -152,11 +152,13 @@ export async function POST(request: Request) {
       ? jsonMatch[0]
       : content.replace(/^```\w*\n?|\n?```$/g, "").trim();
     // If still no clear object, try parsing the whole content
-    let parsed: { x?: number; y?: number; w?: number; h?: number };
+    type CropBox = { x?: number; y?: number; w?: number; h?: number };
+    type CropResult = CropBox & { crop?: CropBox };
+    let parsed: CropResult;
     try {
-      parsed = JSON.parse(jsonStr) as { x?: number; y?: number; w?: number; h?: number; crop?: { x?: number; y?: number; w?: number; h?: number } };
+      parsed = JSON.parse(jsonStr) as CropResult;
     } catch {
-      parsed = JSON.parse(content) as { x?: number; y?: number; w?: number; h?: number; crop?: { x?: number; y?: number; w?: number; h?: number } };
+      parsed = JSON.parse(content) as CropResult;
     }
     const box = parsed.crop ?? parsed;
     const x = Number(box.x);

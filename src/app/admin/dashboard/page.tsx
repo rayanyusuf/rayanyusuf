@@ -450,7 +450,6 @@ export default function AdminDashboardPage() {
       // Serve worker from our own public folder so it always resolves.
       GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
 
-      // @ts-expect-error - getDocument typing
       const loadingTask = getDocument({ data: arrayBuffer });
       const pdf = await loadingTask.promise;
 
@@ -469,7 +468,6 @@ export default function AdminDashboardPage() {
       for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
         setConvertProgress({ page: pageNumber, total: totalPages });
 
-        // @ts-expect-error pdfjs typing
         const page = await pdf.getPage(pageNumber);
         const viewport = page.getViewport({ scale: 2 });
 
@@ -480,8 +478,7 @@ export default function AdminDashboardPage() {
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
 
-        // @ts-expect-error pdfjs typing
-        await page.render({ canvasContext: context, viewport }).promise;
+        await page.render({ canvasContext: context, viewport, canvas }).promise;
 
         const pngBlob: Blob = await new Promise((resolve, reject) => {
           canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("PNG conversion failed."))), "image/png");
