@@ -1,103 +1,17 @@
 "use client";
 
-import Image from "next/image";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 
 const ACCESS_KEY = "ra_access_granted_v1";
+const PROBLEM_IMAGES_BUCKET = "problem-images";
 
 type Problem = {
-  id: string;
-  src: string;
-  alt: string;
-  subject: string;
-  title: string; // e.g. "2024 Sample Paper 1 Question 8"
-  topic: string; // e.g. "Complex Numbers"
+  problem_id: string;
+  image_path: string;
+  image_url: string;
 };
-
-const problems: Problem[] = [
-  {
-    id: "further-maths-june-2023-paper-2-question-3",
-    src: "/problems/further-maths-june-2023-paper-2-question-3.png",
-    alt: "Further Maths June 2023 Paper 2 Question 3",
-    subject: "Further Maths",
-    title: "June 2023 Paper 2 Question 3",
-    topic: "Matrices",
-  },
-  {
-    id: "further-maths-june-2024-paper-1-question-5",
-    src: "/problems/further-maths-june-2024-paper-1-question-5.png",
-    alt: "Further Maths June 2024 Paper 1 Question 5",
-    subject: "Further Maths",
-    title: "June 2024 Paper 1 Question 5",
-    topic: "Complex Numbers",
-  },
-  {
-    id: "further-maths-june-2024-paper-1-question-8",
-    src: "/problems/further-maths-june-2024-paper-1-question-8.png",
-    alt: "Further Maths June 2024 Paper 1 Question 8",
-    subject: "Further Maths",
-    title: "June 2024 Paper 1 Question 8",
-    topic: "Complex Numbers",
-  },
-  {
-    id: "further-maths-sample-paper-1-question-2",
-    src: "/problems/further-maths-sample-paper-1-question-2.png",
-    alt: "Further Maths Sample Paper 1 Question 2",
-    subject: "Further Maths",
-    title: "2024 Sample Paper 1 Question 2",
-    topic: "Vectors / Planes",
-  },
-  {
-    id: "further-maths-sample-paper-1-question-3",
-    src: "/problems/further-maths-sample-paper-1-question-3.png",
-    alt: "Further Maths Sample Paper 1 Question 3",
-    subject: "Further Maths",
-    title: "2024 Sample Paper 1 Question 3",
-    topic: "Matrices",
-  },
-  {
-    id: "further-maths-sample-paper-1-question-8",
-    src: "/problems/further-maths-sample-paper-1-question-8.png",
-    alt: "Further Maths Sample Paper 1 Question 8",
-    subject: "Further Maths",
-    title: "2024 Sample Paper 1 Question 8",
-    topic: "Complex Numbers",
-  },
-  {
-    id: "further-maths-sample-paper-2-question-1",
-    src: "/problems/further-maths-sample-paper-2-question-1.png",
-    alt: "Further Maths Sample Paper 2 Question 1",
-    subject: "Further Maths",
-    title: "Sample Paper 2 Question 1",
-    topic: "Cubic Equations / Roots",
-  },
-  {
-    id: "further-maths-sample-paper-2-question-2",
-    src: "/problems/further-maths-sample-paper-2-question-2.png",
-    alt: "Further Maths Sample Paper 2 Question 2",
-    subject: "Further Maths",
-    title: "Sample Paper 2 Question 2",
-    topic: "Induction / Divisibility",
-  },
-  {
-    id: "further-maths-sample-paper-2-question-3",
-    src: "/problems/further-maths-sample-paper-2-question-3.png",
-    alt: "Further Maths Sample Paper 2 Question 3",
-    subject: "Further Maths",
-    title: "Sample Paper 2 Question 3",
-    topic: "Matrix Transformations",
-  },
-  {
-    id: "further-maths-sample-paper-2-question-4",
-    src: "/problems/further-maths-sample-paper-2-question-4.png",
-    alt: "Further Maths Sample Paper 2 Question 4",
-    subject: "Further Maths",
-    title: "Sample Paper 2 Question 4",
-    topic: "Complex Numbers / Trig Identities",
-  },
-];
 
 function formatTime(ms: number) {
   const totalSeconds = Math.floor(ms / 1000);
@@ -108,17 +22,18 @@ function formatTime(ms: number) {
   return `${minutes}:${seconds}`;
 }
 
-function getRandomProblem(excludeId?: string, topic?: string): Problem {
-  let pool = problems.filter((p) => p.id !== excludeId);
-
-  if (topic) {
-    const sameTopic = pool.filter((p) => p.topic === topic);
-    if (sameTopic.length > 0) {
-      pool = sameTopic;
-    }
-  }
-
+function getRandomProblem(list: Problem[], excludeId?: string): Problem {
+  const pool = excludeId ? list.filter((p) => p.problem_id !== excludeId) : list;
   return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function formatProblemTitle(problemId: string): string {
+  const m = problemId.match(/Further-Maths-(\d{4})-paper-(\d+)-Question-(\d+)/i);
+  if (!m) return problemId;
+  const year = m[1];
+  const paper = m[2];
+  const q = m[3];
+  return `${year} Paper ${paper} Question ${q}`;
 }
 
 type Phase = "ready" | "running" | "stopped";
@@ -126,6 +41,9 @@ type Phase = "ready" | "running" | "stopped";
 export default function ToolPage() {
   const router = useRouter();
   const [problem, setProblem] = useState<Problem | null>(null);
+  const [problems, setProblems] = useState<Problem[]>([]);
+  const [loadingProblems, setLoadingProblems] = useState(true);
+  const [problemLoadError, setProblemLoadError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("ready");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
@@ -145,10 +63,58 @@ export default function ToolPage() {
     }
   }, [router]);
 
-  // Initial random problem
+  // Load problems from Supabase (problems table + storage URLs)
   useEffect(() => {
-    setProblem(getRandomProblem());
-  }, []);
+    if (checkingAuth) return;
+
+    const load = async () => {
+      setLoadingProblems(true);
+      setProblemLoadError(null);
+      try {
+        const { data, error } = await supabase
+          .from("problems")
+          .select("problem_id, problem_image, created_at")
+          .order("created_at", { ascending: false })
+          .limit(500);
+
+        if (error) throw new Error(error.message);
+
+        const rows =
+          (data as { problem_id: string; problem_image: string }[] | null) ?? [];
+
+        const withUrls: Problem[] = [];
+        for (const r of rows) {
+          // Prefer signed URL (works for private buckets); fallback to public URL
+          const { data: signed } = await supabase.storage
+            .from(PROBLEM_IMAGES_BUCKET)
+            .createSignedUrl(r.problem_image, 60 * 60);
+          const url =
+            signed?.signedUrl ??
+            supabase.storage.from(PROBLEM_IMAGES_BUCKET).getPublicUrl(r.problem_image).data.publicUrl;
+          withUrls.push({
+            problem_id: r.problem_id,
+            image_path: r.problem_image,
+            image_url: url,
+          });
+        }
+
+        setProblems(withUrls);
+        if (withUrls.length > 0) {
+          setProblem(getRandomProblem(withUrls));
+        } else {
+          setProblem(null);
+        }
+      } catch (e) {
+        setProblem(null);
+        setProblems([]);
+        setProblemLoadError(e instanceof Error ? e.message : "Failed to load problems.");
+      } finally {
+        setLoadingProblems(false);
+      }
+    };
+
+    load();
+  }, [checkingAuth]);
 
   // Timer effect
   useEffect(() => {
@@ -180,15 +146,12 @@ export default function ToolPage() {
     const durationSeconds = Math.round(elapsedMs / 1000);
 
     await supabase.from("attempts_simple").insert({
-      problem_id: problem.id,
+      problem_id: problem.problem_id,
       duration_seconds: durationSeconds,
       outcome,
     });
 
-    const next =
-      outcome === "solved"
-        ? getRandomProblem(problem.id)
-        : getRandomProblem(problem.id, problem.topic);
+    const next = getRandomProblem(problems, problem.problem_id);
 
     setProblem(next);
     setElapsedMs(0);
@@ -213,24 +176,29 @@ export default function ToolPage() {
         {/* Subject and paper info */}
         <div className="text-center space-y-1">
           <h1 className="text-4xl font-bold tracking-tight">
-            {problem?.subject ?? "Further Maths"}
+            {"Further Maths"}
           </h1>
           <p className="text-lg text-zinc-300">
-            {problem?.title ?? "Loading problem..."}
+            {loadingProblems
+              ? "Loading problems..."
+              : problem
+                ? formatProblemTitle(problem.problem_id)
+                : "No problems yet."}
           </p>
+          {problemLoadError && (
+            <p className="text-sm text-rose-300">{problemLoadError}</p>
+          )}
         </div>
 
         {/* Problem card */}
         <div className="w-full flex items-center justify-center">
           {problem && (
             <div className="w-full max-w-2xl rounded-2xl bg-white p-3 shadow-2xl">
-              <Image
-                src={problem.src}
-                alt={problem.alt}
-                width={1400}
-                height={900}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={problem.image_url}
+                alt={problem.problem_id}
                 className="w-full h-auto object-contain rounded-xl"
-                priority
               />
             </div>
           )}
@@ -240,7 +208,7 @@ export default function ToolPage() {
         {phase === "ready" && (
           <button
             onClick={handleStart}
-            disabled={!problem}
+            disabled={!problem || loadingProblems}
             className="mt-4 w-full max-w-2xl rounded-full bg-emerald-400 px-6 py-4 text-xl font-semibold text-black shadow-lg hover:bg-emerald-300 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             Start

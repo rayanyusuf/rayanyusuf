@@ -4,12 +4,12 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 const ADMIN_KEY = "ra_admin_access_v1";
-const ADMIN_PASSWORD = "yusuf";
 
 export default function AdminLoginPage() {
   const router = useRouter();
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     try {
@@ -21,22 +21,36 @@ export default function AdminLoginPage() {
     }
   }, [router]);
 
-  const onSubmit = (e: React.FormEvent) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-
-    if (password !== ADMIN_PASSWORD) {
-      setError("Wrong password.");
-      return;
-    }
+    setLoading(true);
 
     try {
-      window.localStorage.setItem(ADMIN_KEY, "true");
-    } catch {
-      // ignore
-    }
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok) throw new Error(json?.error ?? `Login failed (${res.status}).`);
+      if (!json.ok) {
+        setError("Wrong password.");
+        return;
+      }
 
-    router.replace("/admin/dashboard");
+      try {
+        window.localStorage.setItem(ADMIN_KEY, "true");
+      } catch {
+        // ignore
+      }
+
+      router.replace("/admin/dashboard");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Login failed.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -57,10 +71,11 @@ export default function AdminLoginPage() {
           />
           <button
             type="submit"
+            disabled={loading}
             className="h-12 w-24 rounded-md bg-amber-400 hover:bg-amber-300 transition font-semibold text-black"
             aria-label="Sign in"
           >
-            Sign in
+            {loading ? "..." : "Sign in"}
           </button>
         </form>
 
