@@ -3,14 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
-
-const ACCESS_KEY = "ra_access_granted_v1";
 const PROBLEM_IMAGES_BUCKET = "problem-images";
 
 type Problem = {
   problem_id: string;
   image_path: string;
   image_url: string;
+  solution_video_url: string | null;
 };
 
 function formatTime(ms: number) {
@@ -72,16 +71,18 @@ export default function ToolPage() {
   const [answerLoading, setAnswerLoading] = useState(false);
 
   useEffect(() => {
-    try {
-      const allowed = window.localStorage.getItem(ACCESS_KEY) === "true";
-      if (!allowed) {
-        router.push("/");
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (cancelled) return;
+      if (!session) {
+        router.replace("/auth?next=/tool");
         return;
       }
       setCheckingAuth(false);
-    } catch {
-      router.push("/");
-    }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   useEffect(() => {
@@ -93,14 +94,14 @@ export default function ToolPage() {
       try {
         const { data, error } = await supabase
           .from("problems")
-          .select("problem_id, problem_image, created_at")
+          .select("problem_id, problem_image, solution_video_url, created_at")
           .order("created_at", { ascending: false })
           .limit(500);
 
         if (error) throw new Error(error.message);
 
         const rows =
-          (data as { problem_id: string; problem_image: string }[] | null) ?? [];
+          (data as { problem_id: string; problem_image: string; solution_video_url: string | null }[] | null) ?? [];
 
         const withUrls: Problem[] = [];
         for (const r of rows) {
@@ -114,6 +115,7 @@ export default function ToolPage() {
             problem_id: r.problem_id,
             image_path: r.problem_image,
             image_url: url,
+            solution_video_url: r.solution_video_url ?? null,
           });
         }
 
@@ -320,21 +322,33 @@ export default function ToolPage() {
               )}
 
               {phase === "stopped" && answerRevealed && (
-                <div className="flex flex-col sm:flex-row gap-4">
-                  <button
-                    onClick={() => handleResult("solved")}
-                    disabled={isSaving}
-                    className="flex-1 rounded-full bg-emerald-400 px-4 py-3 text-lg font-semibold text-black shadow-md hover:bg-emerald-300 disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    {isSaving ? "Saving..." : "Got It Right"}
-                  </button>
-                  <button
-                    onClick={() => handleResult("couldnt_solve")}
-                    disabled={isSaving}
-                    className="flex-1 rounded-full bg-amber-400 px-4 py-3 text-lg font-semibold text-black shadow-md hover:bg-amber-300 disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    {isSaving ? "Saving..." : "Didn't Get It"}
-                  </button>
+                <div className="w-full flex flex-col gap-4">
+                  {problem?.solution_video_url && (
+                    <a
+                      href={problem.solution_video_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-full bg-red-600 px-6 py-3 text-center text-lg font-semibold text-white shadow-md hover:bg-red-500 transition"
+                    >
+                      Watch solution video
+                    </a>
+                  )}
+                  <div className="flex flex-col sm:flex-row gap-4">
+                    <button
+                      onClick={() => handleResult("solved")}
+                      disabled={isSaving}
+                      className="flex-1 rounded-full bg-emerald-400 px-4 py-3 text-lg font-semibold text-black shadow-md hover:bg-emerald-300 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {isSaving ? "Saving..." : "Got It Right"}
+                    </button>
+                    <button
+                      onClick={() => handleResult("couldnt_solve")}
+                      disabled={isSaving}
+                      className="flex-1 rounded-full bg-amber-400 px-4 py-3 text-lg font-semibold text-black shadow-md hover:bg-amber-300 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {isSaving ? "Saving..." : "Didn't Get It"}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

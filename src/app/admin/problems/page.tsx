@@ -11,8 +11,24 @@ const PROBLEM_IMAGES_BUCKET = "problem-images";
 type ProblemRow = {
   problem_id: string;
   problem_image: string;
+  solution_video_url: string | null;
   created_at?: string;
 };
+
+function candidateAnswerIds(problemId: string): string[] {
+  const out = new Set<string>();
+  const t = problemId.trim();
+  out.add(t);
+  const m = t.match(/^Further-Maths-(\d{4})-paper-(\d+)-Question-(\d+)$/i);
+  if (m) {
+    const y = m[1]!;
+    const p = m[2]!;
+    const q = m[3]!;
+    out.add(`Further-Maths-${y}-paper-${p}-Question-${q}`);
+    out.add(`Further-Maths-${y}-Answers-${p}-Question-${q}`);
+  }
+  return [...out];
+}
 
 export default function AdminProblemsPage() {
   const router = useRouter();
@@ -22,6 +38,9 @@ export default function AdminProblemsPage() {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ProblemRow | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [videoUrlEdit, setVideoUrlEdit] = useState("");
+  const [savingVideoUrl, setSavingVideoUrl] = useState(false);
+  const [solutionImageUrl, setSolutionImageUrl] = useState<string | null>(null);
 
   const selectedUrl = useMemo(() => {
     if (!selected) return null;
@@ -51,7 +70,7 @@ export default function AdminProblemsPage() {
       setError(null);
       const { data, error: e } = await supabase
         .from("problems")
-        .select("problem_id, problem_image, created_at")
+        .select("problem_id, problem_image, solution_video_url, created_at")
         .order("created_at", { ascending: false });
 
       if (e) {
@@ -68,12 +87,56 @@ export default function AdminProblemsPage() {
 
   useEffect(() => {
     if (!selected) return;
+    setVideoUrlEdit(selected.solution_video_url ?? "");
+    setSolutionImageUrl(null);
+    const ids = candidateAnswerIds(selected.problem_id);
+    supabase
+      .from("answers")
+      .select("answer_image")
+      .in("answer_id", ids)
+      .limit(1)
+      .then(({ data: answerData }) => {
+        const row = answerData?.[0] as { answer_image: string } | undefined;
+        if (!row?.answer_image) return;
+        const { data } = supabase.storage
+          .from(PROBLEM_IMAGES_BUCKET)
+          .getPublicUrl(row.answer_image);
+        setSolutionImageUrl(data.publicUrl);
+      });
+  }, [selected]);
+
+  useEffect(() => {
+    if (!selected) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") setSelected(null);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selected]);
+
+  const saveSolutionVideoUrl = async () => {
+    if (!selected) return;
+    setSavingVideoUrl(true);
+    setError(null);
+    const url = videoUrlEdit.trim() || null;
+    const { error: e } = await supabase
+      .from("problems")
+      .update({ solution_video_url: url })
+      .eq("problem_id", selected.problem_id);
+    if (e) {
+      setError(e.message);
+    } else {
+      setProblems((prev) =>
+        prev.map((p) =>
+          p.problem_id === selected.problem_id ? { ...p, solution_video_url: url } : p
+        )
+      );
+      setSelected((cur) =>
+        cur?.problem_id === selected.problem_id ? { ...cur, solution_video_url: url } : cur
+      );
+    }
+    setSavingVideoUrl(false);
+  };
 
   const deleteProblem = async (p: ProblemRow) => {
     const ok = window.confirm(
@@ -200,6 +263,16 @@ export default function AdminProblemsPage() {
                       Open image
                     </a>
                   )}
+                  {solutionImageUrl && (
+                    <a
+                      href={solutionImageUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-md bg-zinc-700 px-3 py-2 text-xs font-semibold text-zinc-100 hover:bg-zinc-600 transition"
+                    >
+                      View solution
+                    </a>
+                  )}
                   <button
                     type="button"
                     onClick={() => deleteProblem(selected)}
@@ -215,6 +288,29 @@ export default function AdminProblemsPage() {
                     className="rounded-md bg-zinc-200 px-3 py-2 text-xs font-semibold text-black hover:bg-white transition"
                   >
                     Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="px-4 py-3 border-b border-zinc-800 space-y-2">
+                <label className="block text-xs font-medium text-zinc-400">
+                  Solution video (YouTube URL)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={videoUrlEdit}
+                    onChange={(e) => setVideoUrlEdit(e.target.value)}
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    className="flex-1 min-w-0 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void saveSolutionVideoUrl()}
+                    disabled={savingVideoUrl}
+                    className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 transition disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                  >
+                    {savingVideoUrl ? "Saving…" : "Save"}
                   </button>
                 </div>
               </div>

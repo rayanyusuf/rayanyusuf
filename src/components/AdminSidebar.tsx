@@ -10,6 +10,7 @@ const navItems = [
   { href: "/admin/answers", label: "Solution Key", title: "Solution key (PDFs & crops)" },
   { href: "/admin/problems", label: "Problems", title: "Problems library" },
   { href: "/admin/saved-answers", label: "Answers", title: "Answers (saved crops)" },
+  { href: "/admin/leads", label: "Leads", title: "Email signups" },
 ] as const;
 
 export default function AdminSidebar() {
