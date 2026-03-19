@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "A Level Mathematics - Past Paper Solutions",
-  description: "A Level Mathematics past paper solutions and tutorials by a student at British School Dhahran, Saudi Arabia",
+  title: "Drill Sergeant — Real past papers, timed practice",
+  description:
+    "Free early access: practise real A-Level Further Maths past-paper questions with a built-in timer, answer reveals, and optional video solutions. Built by a student at British School Dhahran.",
 };
 
 export default function RootLayout({
@@ -25,7 +26,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}
       >
         {children}
       </body>

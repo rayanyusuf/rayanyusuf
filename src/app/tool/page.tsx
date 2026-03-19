@@ -64,6 +64,10 @@ export default function ToolPage() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  type AttemptRow = { problem_id: string; outcome: string; created_at?: string };
+  const [attemptedList, setAttemptedList] = useState<AttemptRow[]>([]);
   /** User tapped "Show Answer" (loads answer into main card). */
   const [answerRevealed, setAnswerRevealed] = useState(false);
   const [answerImageUrl, setAnswerImageUrl] = useState<string | null>(null);
@@ -78,12 +82,20 @@ export default function ToolPage() {
         router.replace("/auth?next=/tool");
         return;
       }
+      setUserEmail(session.user?.email ?? null);
+      setUserId(session.user?.id ?? null);
       setCheckingAuth(false);
     });
     return () => {
       cancelled = true;
     };
   }, [router]);
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    router.refresh();
+    router.replace("/");
+  };
 
   useEffect(() => {
     if (checkingAuth) return;
@@ -136,6 +148,33 @@ export default function ToolPage() {
 
     load();
   }, [checkingAuth]);
+
+  // Load this user's attempted problems for the sidebar
+  useEffect(() => {
+    if (!userId) return;
+    const loadAttempts = async () => {
+      const { data, error } = await supabase
+        .from("attempts_simple")
+        .select("problem_id, outcome, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (!error) setAttemptedList((data as AttemptRow[]) ?? []);
+    };
+    loadAttempts();
+  }, [userId]);
+
+  // Refetch attempted list after saving an attempt (so new attempt appears in sidebar)
+  const refreshAttemptedList = async () => {
+    if (!userId) return;
+    const { data, error } = await supabase
+      .from("attempts_simple")
+      .select("problem_id, outcome, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (!error) setAttemptedList((data as AttemptRow[]) ?? []);
+  };
 
   useEffect(() => {
     if (phase !== "running") return;
@@ -214,7 +253,7 @@ export default function ToolPage() {
   };
 
   const handleResult = async (outcome: "solved" | "couldnt_solve") => {
-    if (!problem || phase !== "stopped" || !answerRevealed) return;
+    if (!problem || phase !== "stopped" || !answerRevealed || !userId) return;
 
     setIsSaving(true);
     const durationSeconds = Math.round(elapsedMs / 1000);
@@ -223,7 +262,10 @@ export default function ToolPage() {
       problem_id: problem.problem_id,
       duration_seconds: durationSeconds,
       outcome,
+      user_id: userId,
     });
+
+    await refreshAttemptedList();
 
     const next = getRandomProblem(problems, problem.problem_id);
 
@@ -246,8 +288,53 @@ export default function ToolPage() {
           <p className="text-sm text-zinc-300">Checking your account...</p>
         </div>
       ) : (
-        <div className="min-h-screen bg-black text-white flex items-center justify-center">
-          <main className="w-full max-w-3xl px-4 py-10 flex flex-col items-center gap-6">
+        <div className="min-h-screen bg-black text-white flex">
+          {/* Left sidebar: email + logout */}
+          <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950/80">
+            <div className="p-4">
+              <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Logged in as</p>
+              <p className="mt-1 truncate text-sm text-zinc-200" title={userEmail ?? undefined}>
+                {userEmail ?? "—"}
+              </p>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
+              <p className="border-b border-zinc-800 px-4 py-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+                Attempted
+              </p>
+              <ul className="flex-1 overflow-y-auto px-2 py-2">
+                {attemptedList.length === 0 ? (
+                  <li className="py-3 text-center text-xs text-zinc-500">None yet</li>
+                ) : (
+                  attemptedList.map((a, i) => (
+                    <li key={a.created_at ? `${a.problem_id}-${a.created_at}` : `attempt-${i}`} className="border-b border-zinc-800/80 py-2 last:border-0">
+                      <p className="truncate text-sm text-zinc-200" title={a.problem_id}>
+                        {formatProblemTitle(a.problem_id)}
+                      </p>
+                      <span
+                        className={`mt-0.5 inline-block text-xs ${
+                          a.outcome === "solved" ? "text-emerald-400" : "text-amber-400"
+                        }`}
+                      >
+                        {a.outcome === "solved" ? "Got it" : "Didn't get it"}
+                      </span>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+            <div className="border-t border-zinc-800 p-4">
+              <button
+                type="button"
+                onClick={() => void handleSignOut()}
+                className="w-full rounded-lg bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-200 transition hover:bg-zinc-700 hover:text-white"
+              >
+                Log out
+              </button>
+            </div>
+          </aside>
+
+          <main className="min-h-screen flex-1 flex items-center justify-center px-4 py-10">
+          <div className="w-full max-w-3xl flex flex-col items-center gap-6">
             <div className="text-4xl font-mono font-semibold">{formatTime(elapsedMs)}</div>
 
             <div className="text-center space-y-1">
@@ -352,6 +439,7 @@ export default function ToolPage() {
                 </div>
               )}
             </div>
+          </div>
           </main>
         </div>
       )}
