@@ -29,7 +29,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 ## Authentication (Supabase)
 
-The **practice tool** (`/tool`) requires a Supabase Auth user (email + password). Sign-in and sign-up live at **`/auth`**.
+The **practice tool** (`/tool`) requires a Supabase Auth user (email + password). **Sign in** at **`/login`** and **register** at **`/register`** (not linked from the public landing page). The landing page uses **`/early-access`** (WhatsApp form). Legacy **`/auth`** redirects to **`/login`**.
 
 1. In the [Supabase dashboard](https://supabase.com/dashboard) → **Authentication** → **URL configuration**:
    - Set **Site URL** to your deployed origin (e.g. `https://your-domain.vercel.app`) or `http://localhost:3000` for local dev.
@@ -41,8 +41,11 @@ The **practice tool** (`/tool`) requires a Supabase Auth user (email + password)
 
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `WHATSAPP_NUMBER` — E.164 or local format for early-access WhatsApp links (e.g. `+4746677978` or `47 466 77 978`)
 
 **Admin** (`/admin` and sub-routes) still uses the server env password via `POST /api/auth/login` and `PASSWORD` — separate from learner accounts.
+
+If you’re **signed into TaskTutor** in the same browser, Supabase sees you as **`authenticated`**, not `anon`. Older RLS policies often only allowed `anon`, which causes **“new row violates row-level security policy”** on PDF uploads or saving problems. Run **`supabase/authenticated-admin-write-policies.sql`** in the SQL Editor (and keep **`supabase/auth-policies-for-tool.sql`** for learner read access). Alternatively, use admin in a private window while signed out of TaskTutor.
 
 ## Deployment
 

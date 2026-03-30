@@ -31,15 +31,19 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-  if (!user && request.nextUrl.pathname.startsWith("/tool")) {
-    const redirectUrl = request.nextUrl.clone();
-    redirectUrl.pathname = "/auth";
-    redirectUrl.searchParams.set("next", "/tool");
-    return NextResponse.redirect(redirectUrl);
+    if (!user && request.nextUrl.pathname.startsWith("/tool")) {
+      const redirectUrl = request.nextUrl.clone();
+      redirectUrl.pathname = "/login";
+      redirectUrl.searchParams.set("next", "/tool");
+      return NextResponse.redirect(redirectUrl);
+    }
+  } catch {
+    // Offline, DNS, or Supabase unreachable: don't block the request; /tool still checks auth on the client.
   }
 
   return supabaseResponse;

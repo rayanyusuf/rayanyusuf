@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Drill Sergeant — Real past papers, timed practice",
+  title: "TaskTutor — Real past papers, timed practice",
   description:
-    "Free early access: practise real A-Level Further Maths past-paper questions with a built-in timer, answer reveals, and optional video solutions. Built by a student at British School Dhahran.",
+    "Train for top universities with real past papers: timed reps, mark schemes when you’re ready, and a log of how you did—built by an A Level student.",
 };
 
 export default function RootLayout({

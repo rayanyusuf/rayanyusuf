@@ -1,8 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
+import {
+  TOOL_SUBJECTS,
+  type SubjectSlug,
+  candidateAnswerIds,
+  formatProblemTitle,
+  problemMatchesSubject,
+} from "@/lib/toolSubjects";
+
 const PROBLEM_IMAGES_BUCKET = "problem-images";
 
 type Problem = {
@@ -26,38 +34,15 @@ function getRandomProblem(list: Problem[], excludeId?: string): Problem {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function formatProblemTitle(problemId: string): string {
-  const m = problemId.match(/Further-Maths-(\d{4})-paper-(\d+)-Question-(\d+)/i);
-  if (!m) return problemId;
-  const year = m[1];
-  const paper = m[2];
-  const q = m[3];
-  return `${year} Paper ${paper} Question ${q}`;
-}
-
-/** Match `answers.answer_id` to `problems.problem_id` (exact + legacy naming). */
-function candidateAnswerIds(problemId: string): string[] {
-  const out = new Set<string>();
-  const t = problemId.trim();
-  out.add(t);
-  const m = t.match(/^Further-Maths-(\d{4})-paper-(\d+)-Question-(\d+)$/i);
-  if (m) {
-    const y = m[1]!;
-    const p = m[2]!;
-    const q = m[3]!;
-    out.add(`Further-Maths-${y}-paper-${p}-Question-${q}`);
-    out.add(`Further-Maths-${y}-Answers-${p}-Question-${q}`);
-  }
-  return [...out];
-}
-
 type Phase = "ready" | "running" | "stopped";
 
 export default function ToolPage() {
   const router = useRouter();
   const actionsRef = useRef<HTMLDivElement | null>(null);
+  /** Default Further Maths: matches current `Further-Maths-*` ids in the DB. */
+  const [activeSubject, setActiveSubject] = useState<SubjectSlug>("further-maths");
+  const [allProblems, setAllProblems] = useState<Problem[]>([]);
   const [problem, setProblem] = useState<Problem | null>(null);
-  const [problems, setProblems] = useState<Problem[]>([]);
   const [loadingProblems, setLoadingProblems] = useState(true);
   const [problemLoadError, setProblemLoadError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("ready");
@@ -68,18 +53,48 @@ export default function ToolPage() {
   const [userId, setUserId] = useState<string | null>(null);
   type AttemptRow = { problem_id: string; outcome: string; created_at?: string };
   const [attemptedList, setAttemptedList] = useState<AttemptRow[]>([]);
-  /** User tapped "Show Answer" (loads answer into main card). */
   const [answerRevealed, setAnswerRevealed] = useState(false);
   const [answerImageUrl, setAnswerImageUrl] = useState<string | null>(null);
   const [answerNotice, setAnswerNotice] = useState<string | null>(null);
   const [answerLoading, setAnswerLoading] = useState(false);
+
+  const subjectProblems = useMemo(
+    () => allProblems.filter((p) => problemMatchesSubject(p.problem_id, activeSubject)),
+    [allProblems, activeSubject]
+  );
+
+  const subjectLabel = useMemo(
+    () => TOOL_SUBJECTS.find((s) => s.slug === activeSubject)?.label ?? "Practice",
+    [activeSubject]
+  );
+
+  const attemptedForSubject = useMemo(
+    () => attemptedList.filter((a) => problemMatchesSubject(a.problem_id, activeSubject)),
+    [attemptedList, activeSubject]
+  );
+
+  const resetAnswerState = useCallback(() => {
+    setAnswerRevealed(false);
+    setAnswerImageUrl(null);
+    setAnswerNotice(null);
+    setAnswerLoading(false);
+  }, []);
+
+  const pickProblemForSubject = useCallback(
+    (slug: SubjectSlug, list: Problem[], excludeId?: string) => {
+      const pool = list.filter((p) => problemMatchesSubject(p.problem_id, slug));
+      if (pool.length === 0) return null;
+      return getRandomProblem(pool, excludeId);
+    },
+    []
+  );
 
   useEffect(() => {
     let cancelled = false;
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (cancelled) return;
       if (!session) {
-        router.replace("/auth?next=/tool");
+        router.replace("/login?next=/tool");
         return;
       }
       setUserEmail(session.user?.email ?? null);
@@ -131,15 +146,9 @@ export default function ToolPage() {
           });
         }
 
-        setProblems(withUrls);
-        if (withUrls.length > 0) {
-          setProblem(getRandomProblem(withUrls));
-        } else {
-          setProblem(null);
-        }
+        setAllProblems(withUrls);
       } catch (e) {
-        setProblem(null);
-        setProblems([]);
+        setAllProblems([]);
         setProblemLoadError(e instanceof Error ? e.message : "Failed to load problems.");
       } finally {
         setLoadingProblems(false);
@@ -149,7 +158,16 @@ export default function ToolPage() {
     load();
   }, [checkingAuth]);
 
-  // Load this user's attempted problems for the sidebar
+  // When subject changes or full list loads: reset drill state and pick a problem in this subject
+  useEffect(() => {
+    if (checkingAuth || loadingProblems) return;
+    setPhase("ready");
+    setElapsedMs(0);
+    resetAnswerState();
+    const next = pickProblemForSubject(activeSubject, allProblems);
+    setProblem(next);
+  }, [activeSubject, allProblems, checkingAuth, loadingProblems, pickProblemForSubject, resetAnswerState]);
+
   useEffect(() => {
     if (!userId) return;
     const loadAttempts = async () => {
@@ -164,7 +182,6 @@ export default function ToolPage() {
     loadAttempts();
   }, [userId]);
 
-  // Refetch attempted list after saving an attempt (so new attempt appears in sidebar)
   const refreshAttemptedList = async () => {
     if (!userId) return;
     const { data, error } = await supabase
@@ -186,13 +203,6 @@ export default function ToolPage() {
 
     return () => window.clearInterval(id);
   }, [phase, elapsedMs]);
-
-  const resetAnswerState = () => {
-    setAnswerRevealed(false);
-    setAnswerImageUrl(null);
-    setAnswerNotice(null);
-    setAnswerLoading(false);
-  };
 
   const handleStart = () => {
     if (!problem || phase !== "ready") return;
@@ -267,7 +277,7 @@ export default function ToolPage() {
 
     await refreshAttemptedList();
 
-    const next = getRandomProblem(problems, problem.problem_id);
+    const next = pickProblemForSubject(activeSubject, allProblems, problem.problem_id);
 
     setProblem(next);
     setElapsedMs(0);
@@ -288,159 +298,185 @@ export default function ToolPage() {
           <p className="text-sm text-zinc-300">Checking your account...</p>
         </div>
       ) : (
-        <div className="min-h-screen bg-black text-white flex">
-          {/* Left sidebar: email + logout */}
-          <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950/80">
-            <div className="p-4">
-              <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Logged in as</p>
-              <p className="mt-1 truncate text-sm text-zinc-200" title={userEmail ?? undefined}>
-                {userEmail ?? "—"}
-              </p>
+        <div className="flex min-h-screen flex-col bg-black text-white">
+          {/* Subject tabs */}
+          <header className="shrink-0 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur-sm">
+            <div className="flex flex-wrap items-center gap-1 px-3 py-2 sm:px-4">
+              <span className="mr-2 hidden text-xs font-medium uppercase tracking-wider text-zinc-500 sm:inline">
+                Subject
+              </span>
+              {TOOL_SUBJECTS.map((s) => (
+                <button
+                  key={s.slug}
+                  type="button"
+                  onClick={() => setActiveSubject(s.slug)}
+                  className={`rounded-lg px-3 py-2 text-sm font-medium transition sm:px-4 ${
+                    activeSubject === s.slug
+                      ? "bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/40"
+                      : "text-zinc-400 hover:bg-zinc-800/80 hover:text-zinc-200"
+                  }`}
+                >
+                  {s.shortLabel}
+                </button>
+              ))}
             </div>
-            <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
-              <p className="border-b border-zinc-800 px-4 py-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
-                Attempted
-              </p>
-              <ul className="flex-1 overflow-y-auto px-2 py-2">
-                {attemptedList.length === 0 ? (
-                  <li className="py-3 text-center text-xs text-zinc-500">None yet</li>
-                ) : (
-                  attemptedList.map((a, i) => (
-                    <li key={a.created_at ? `${a.problem_id}-${a.created_at}` : `attempt-${i}`} className="border-b border-zinc-800/80 py-2 last:border-0">
-                      <p className="truncate text-sm text-zinc-200" title={a.problem_id}>
-                        {formatProblemTitle(a.problem_id)}
-                      </p>
-                      <span
-                        className={`mt-0.5 inline-block text-xs ${
-                          a.outcome === "solved" ? "text-emerald-400" : "text-amber-400"
-                        }`}
-                      >
-                        {a.outcome === "solved" ? "Got it" : "Didn't get it"}
-                      </span>
-                    </li>
-                  ))
-                )}
-              </ul>
-            </div>
-            <div className="border-t border-zinc-800 p-4">
-              <button
-                type="button"
-                onClick={() => void handleSignOut()}
-                className="w-full rounded-lg bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-200 transition hover:bg-zinc-700 hover:text-white"
-              >
-                Log out
-              </button>
-            </div>
-          </aside>
+          </header>
 
-          <main className="min-h-screen flex-1 flex items-center justify-center px-4 py-10">
-          <div className="w-full max-w-3xl flex flex-col items-center gap-6">
-            <div className="text-4xl font-mono font-semibold">{formatTime(elapsedMs)}</div>
-
-            <div className="text-center space-y-1">
-              <h1 className="text-4xl font-bold tracking-tight">Further Maths</h1>
-              <p className="text-lg text-zinc-300">
-                {loadingProblems
-                  ? "Loading problems..."
-                  : problem
-                    ? formatProblemTitle(problem.problem_id)
-                    : "No problems yet."}
-              </p>
-              {problemLoadError && (
-                <p className="text-sm text-rose-300">{problemLoadError}</p>
-              )}
-            </div>
-
-            {/* Main card: question PNG, then swaps to answer PNG after "Show Answer" */}
-            <div className="w-full flex items-center justify-center">
-              {problem && (
-                <div className="w-full max-w-2xl rounded-2xl bg-white p-3 shadow-2xl">
-                  {phase === "stopped" && answerRevealed && answerImageUrl && (
-                    <p className="text-center text-sm font-semibold text-zinc-700 mb-2">Answer</p>
-                  )}
-                  {phase === "stopped" && answerRevealed && answerNotice && !answerImageUrl ? (
-                    <div className="rounded-xl bg-zinc-100 px-4 py-8 text-center text-sm text-zinc-700">
-                      {answerNotice}
-                      <p className="mt-3 text-xs text-zinc-500">
-                        You can still record how you did below.
-                      </p>
-                    </div>
+          <div className="flex min-h-0 flex-1">
+            <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950/80">
+              <div className="p-4">
+                <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Logged in as</p>
+                <p className="mt-1 truncate text-sm text-zinc-200" title={userEmail ?? undefined}>
+                  {userEmail ?? "—"}
+                </p>
+              </div>
+              <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
+                <p className="border-b border-zinc-800 px-4 py-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+                  Attempted ({subjectLabel})
+                </p>
+                <ul className="flex-1 overflow-y-auto px-2 py-2">
+                  {attemptedForSubject.length === 0 ? (
+                    <li className="py-3 text-center text-xs text-zinc-500">None yet</li>
                   ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={cardImageSrc}
-                      alt={cardAlt}
-                      className="w-full h-auto object-contain rounded-xl"
-                    />
+                    attemptedForSubject.map((a, i) => (
+                      <li
+                        key={a.created_at ? `${a.problem_id}-${a.created_at}` : `attempt-${i}`}
+                        className="border-b border-zinc-800/80 py-2 last:border-0"
+                      >
+                        <p className="truncate text-sm text-zinc-200" title={a.problem_id}>
+                          {formatProblemTitle(a.problem_id)}
+                        </p>
+                        <span
+                          className={`mt-0.5 inline-block text-xs ${
+                            a.outcome === "solved" ? "text-emerald-400" : "text-amber-400"
+                          }`}
+                        >
+                          {a.outcome === "solved" ? "Got it" : "Didn't get it"}
+                        </span>
+                      </li>
+                    ))
                   )}
-                </div>
-              )}
-            </div>
-
-            <div ref={actionsRef} className="w-full max-w-2xl flex flex-col gap-4">
-              {phase === "ready" && (
-                <button
-                  onClick={handleStart}
-                  disabled={!problem || loadingProblems}
-                  className="w-full rounded-full bg-emerald-400 px-6 py-4 text-xl font-semibold text-black shadow-lg hover:bg-emerald-300 disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  Start
-                </button>
-              )}
-
-              {phase === "running" && (
-                <button
-                  onClick={handleStop}
-                  className="w-full rounded-full bg-amber-400 px-6 py-4 text-xl font-semibold text-black shadow-lg hover:bg-amber-300"
-                >
-                  Stop timer
-                </button>
-              )}
-
-              {phase === "stopped" && !answerRevealed && (
+                </ul>
+              </div>
+              <div className="border-t border-zinc-800 p-4">
                 <button
                   type="button"
-                  onClick={() => void handleShowAnswer()}
-                  disabled={answerLoading || !problem}
-                  className="w-full rounded-full bg-sky-400 px-6 py-4 text-xl font-semibold text-black shadow-lg hover:bg-sky-300 disabled:opacity-60 disabled:cursor-not-allowed"
+                  onClick={() => void handleSignOut()}
+                  className="w-full rounded-lg bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-200 transition hover:bg-zinc-700 hover:text-white"
                 >
-                  {answerLoading ? "Loading…" : "Show Answer"}
+                  Log out
                 </button>
-              )}
+              </div>
+            </aside>
 
-              {phase === "stopped" && answerRevealed && (
-                <div className="w-full flex flex-col gap-4">
-                  {problem?.solution_video_url && (
-                    <a
-                      href={problem.solution_video_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="rounded-full bg-red-600 px-6 py-3 text-center text-lg font-semibold text-white shadow-md hover:bg-red-500 transition"
-                    >
-                      Watch solution video
-                    </a>
-                  )}
-                  <div className="flex flex-col sm:flex-row gap-4">
-                    <button
-                      onClick={() => handleResult("solved")}
-                      disabled={isSaving}
-                      className="flex-1 rounded-full bg-emerald-400 px-4 py-3 text-lg font-semibold text-black shadow-md hover:bg-emerald-300 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {isSaving ? "Saving..." : "Got It Right"}
-                    </button>
-                    <button
-                      onClick={() => handleResult("couldnt_solve")}
-                      disabled={isSaving}
-                      className="flex-1 rounded-full bg-amber-400 px-4 py-3 text-lg font-semibold text-black shadow-md hover:bg-amber-300 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {isSaving ? "Saving..." : "Didn't Get It"}
-                    </button>
-                  </div>
+            <main className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 py-10">
+              <div className="flex w-full max-w-3xl flex-col items-center gap-6">
+                <div className="text-4xl font-mono font-semibold">{formatTime(elapsedMs)}</div>
+
+                <div className="space-y-1 text-center">
+                  <h1 className="text-4xl font-bold tracking-tight">{subjectLabel}</h1>
+                  <p className="text-lg text-zinc-300">
+                    {loadingProblems
+                      ? "Loading problems..."
+                      : problem
+                        ? formatProblemTitle(problem.problem_id)
+                        : subjectProblems.length === 0
+                          ? "No problems for this subject yet."
+                          : "No problems yet."}
+                  </p>
+                  {problemLoadError && <p className="text-sm text-rose-300">{problemLoadError}</p>}
                 </div>
-              )}
-            </div>
+
+                <div className="flex w-full items-center justify-center">
+                  {problem && (
+                    <div className="w-full max-w-2xl rounded-2xl bg-white p-3 shadow-2xl">
+                      {phase === "stopped" && answerRevealed && answerImageUrl && (
+                        <p className="mb-2 text-center text-sm font-semibold text-zinc-700">Answer</p>
+                      )}
+                      {phase === "stopped" && answerRevealed && answerNotice && !answerImageUrl ? (
+                        <div className="rounded-xl bg-zinc-100 px-4 py-8 text-center text-sm text-zinc-700">
+                          {answerNotice}
+                          <p className="mt-3 text-xs text-zinc-500">
+                            You can still record how you did below.
+                          </p>
+                        </div>
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={cardImageSrc}
+                          alt={cardAlt}
+                          className="w-full h-auto rounded-xl object-contain"
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div ref={actionsRef} className="flex w-full max-w-2xl flex-col gap-4">
+                  {phase === "ready" && (
+                    <button
+                      onClick={handleStart}
+                      disabled={!problem || loadingProblems}
+                      className="w-full rounded-full bg-emerald-400 px-6 py-4 text-xl font-semibold text-black shadow-lg hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Start
+                    </button>
+                  )}
+
+                  {phase === "running" && (
+                    <button
+                      onClick={handleStop}
+                      className="w-full rounded-full bg-amber-400 px-6 py-4 text-xl font-semibold text-black shadow-lg hover:bg-amber-300"
+                    >
+                      Stop timer
+                    </button>
+                  )}
+
+                  {phase === "stopped" && !answerRevealed && (
+                    <button
+                      type="button"
+                      onClick={() => void handleShowAnswer()}
+                      disabled={answerLoading || !problem}
+                      className="w-full rounded-full bg-sky-400 px-6 py-4 text-xl font-semibold text-black shadow-lg hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {answerLoading ? "Loading…" : "Show Answer"}
+                    </button>
+                  )}
+
+                  {phase === "stopped" && answerRevealed && (
+                    <div className="flex w-full flex-col gap-4">
+                      {problem?.solution_video_url && (
+                        <a
+                          href={problem.solution_video_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-full bg-red-600 px-6 py-3 text-center text-lg font-semibold text-white shadow-md transition hover:bg-red-500"
+                        >
+                          Watch solution video
+                        </a>
+                      )}
+                      <div className="flex flex-col gap-4 sm:flex-row">
+                        <button
+                          onClick={() => handleResult("solved")}
+                          disabled={isSaving}
+                          className="flex-1 rounded-full bg-emerald-400 px-4 py-3 text-lg font-semibold text-black shadow-md hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isSaving ? "Saving..." : "Got It Right"}
+                        </button>
+                        <button
+                          onClick={() => handleResult("couldnt_solve")}
+                          disabled={isSaving}
+                          className="flex-1 rounded-full bg-amber-400 px-4 py-3 text-lg font-semibold text-black shadow-md hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isSaving ? "Saving..." : "Didn't Get It"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </main>
           </div>
-          </main>
         </div>
       )}
     </>

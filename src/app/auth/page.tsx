@@ -1,16 +1,15 @@
-import { AuthForm } from "./AuthForm";
+import { redirect } from "next/navigation";
 
-export default async function AuthPage({
+/** Old URL: send people to /login */
+export default async function AuthRedirectPage({
   searchParams,
 }: {
   searchParams: Promise<{ next?: string; error?: string }>;
 }) {
   const p = await searchParams;
-  const nextPath = typeof p.next === "string" && p.next.startsWith("/") ? p.next : "/tool";
-
-  return (
-    <div className="min-h-screen bg-black text-white flex items-center justify-center px-4">
-      <AuthForm nextPath={nextPath} initialError={p.error} />
-    </div>
-  );
+  const q = new URLSearchParams();
+  if (typeof p.next === "string" && p.next.startsWith("/")) q.set("next", p.next);
+  if (p.error) q.set("error", p.error);
+  const suffix = q.toString();
+  redirect(suffix ? `/login?${suffix}` : "/login");
 }
