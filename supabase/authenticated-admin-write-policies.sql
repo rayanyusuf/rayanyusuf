@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Fix: "new row violates row-level security policy" when uploading from admin
--- while logged into TaskTutor (browser uses `authenticated`, not `anon`).
+-- while logged into PastPaperLab (browser uses `authenticated`, not `anon`).
 -- Run once in Supabase SQL Editor.
 --
 -- Security: any signed-in user gets these rights — same as your current anon

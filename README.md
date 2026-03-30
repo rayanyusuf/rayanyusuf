@@ -45,7 +45,7 @@ The **practice tool** (`/tool`) requires a Supabase Auth user (email + password)
 
 **Admin** (`/admin` and sub-routes) still uses the server env password via `POST /api/auth/login` and `PASSWORD` — separate from learner accounts.
 
-If you’re **signed into TaskTutor** in the same browser, Supabase sees you as **`authenticated`**, not `anon`. Older RLS policies often only allowed `anon`, which causes **“new row violates row-level security policy”** on PDF uploads or saving problems. Run **`supabase/authenticated-admin-write-policies.sql`** in the SQL Editor (and keep **`supabase/auth-policies-for-tool.sql`** for learner read access). Alternatively, use admin in a private window while signed out of TaskTutor.
+If you’re **signed into PastPaperLab** in the same browser, Supabase sees you as **`authenticated`**, not `anon`. Older RLS policies often only allowed `anon`, which causes **“new row violates row-level security policy”** on PDF uploads or saving problems. Run **`supabase/authenticated-admin-write-policies.sql`** in the SQL Editor (and keep **`supabase/auth-policies-for-tool.sql`** for learner read access). Alternatively, use admin in a private window while signed out of PastPaperLab.
 
 ## Deployment
 

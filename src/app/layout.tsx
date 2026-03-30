@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TaskTutor — Real past papers, timed practice",
+  title: "PastPaperLab — Real past papers, timed practice",
   description:
-    "Train for top universities with real past papers: timed reps, mark schemes when you’re ready, and a log of how you did—built by an A Level student.",
+    "PastPaperLab: train with real past papers, timed reps, mark schemes when you are ready, and a log of how you did. Built by an A Level student.",
 };
 
 export default function RootLayout({

@@ -52,7 +52,7 @@ export function SignInForm({ nextPath, initialError }: Props) {
   return (
     <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950/95 p-8 shadow-2xl">
       <h1 className="text-2xl font-semibold tracking-tight text-white">Sign in</h1>
-      <p className="mt-2 text-sm text-zinc-400">TaskTutor account (for testing).</p>
+      <p className="mt-2 text-sm text-zinc-400">PastPaperLab account (for testing).</p>
       <form onSubmit={onSubmit} className="mt-6 space-y-4">
         <input
           type="email"

@@ -14,7 +14,7 @@ export function buildEarlyAccessWhatsAppUrl(
     school: string;
   }
 ): string {
-  const text = `Hi, I'm requesting early access to TaskTutor.
+  const text = `Hi, I'm requesting early access to PastPaperLab.
 
 Name: ${fields.name}
 Date of birth: ${fields.dateOfBirth}

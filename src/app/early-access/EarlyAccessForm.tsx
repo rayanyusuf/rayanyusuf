@@ -44,7 +44,7 @@ export function EarlyAccessForm({ whatsappE164Digits }: Props) {
           <Link href="/" className="text-sm font-medium text-zinc-400 hover:text-white">
             ← Back
           </Link>
-          <span className="font-semibold text-white">TaskTutor</span>
+          <span className="font-semibold text-white">PastPaperLab</span>
           <span className="w-10" aria-hidden />
         </div>
       </header>

@@ -24,7 +24,7 @@ export function LandingPage() {
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/5 ring-1 ring-white/10">
               <IconGraduation className="h-4 w-4 text-emerald-400" />
             </span>
-            TaskTutor
+            PastPaperLab
           </Link>
           <Link
             href="/early-access"
@@ -76,17 +76,11 @@ export function LandingPage() {
             <IconArrowRight className="h-5 w-5" />
           </Link>
         </div>
-
-        <p className="mt-10 text-center text-xs text-zinc-600">
-          Operators:{" "}
-          <Link href="/admin" className="text-zinc-500 underline-offset-2 hover:underline">
-            /admin
-          </Link>
-        </p>
       </main>
 
       <footer className="relative z-10 border-t border-white/[0.06] py-8 text-center text-xs text-zinc-600">
-        TaskTutor · timed past-paper reps
+        <p>PastPaperLab · timed past-paper reps</p>
+        <p className="mt-2 text-zinc-500">Rayan Yusuf · Copyright 2026</p>
       </footer>
     </div>
   );
