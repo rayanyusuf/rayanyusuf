@@ -49,6 +49,8 @@ export default function ToolPage() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  /** Set when `getSession` fails (network / Supabase down) so we don't spin forever or leave an unhandled rejection. */
+  const [authFetchError, setAuthFetchError] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   type AttemptRow = { problem_id: string; outcome: string; created_at?: string };
@@ -91,16 +93,35 @@ export default function ToolPage() {
 
   useEffect(() => {
     let cancelled = false;
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (cancelled) return;
-      if (!session) {
-        router.replace("/login?next=/tool");
-        return;
-      }
-      setUserEmail(session.user?.email ?? null);
-      setUserId(session.user?.id ?? null);
-      setCheckingAuth(false);
-    });
+    setAuthFetchError(null);
+    supabase.auth
+      .getSession()
+      .then(({ data: { session }, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setAuthFetchError(error.message || "Could not verify your session.");
+          setCheckingAuth(false);
+          return;
+        }
+        if (!session) {
+          router.replace("/login?next=/tool");
+          return;
+        }
+        setUserEmail(session.user?.email ?? null);
+        setUserId(session.user?.id ?? null);
+        setCheckingAuth(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        const msg =
+          e instanceof Error && e.message === "Failed to fetch"
+            ? "Network error: could not reach sign-in (check connection, VPN, or ad blockers)."
+            : e instanceof Error
+              ? e.message
+              : "Could not reach sign-in service.";
+        setAuthFetchError(msg);
+        setCheckingAuth(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -291,9 +312,51 @@ export default function ToolPage() {
   const cardImageSrc = showAnswerInCard ? answerImageUrl! : problem?.image_url ?? "";
   const cardAlt = showAnswerInCard ? "Answer" : problem?.problem_id ?? "";
 
+  const retryAuthCheck = () => {
+    setAuthFetchError(null);
+    setCheckingAuth(true);
+    supabase.auth
+      .getSession()
+      .then(({ data: { session }, error }) => {
+        if (error) {
+          setAuthFetchError(error.message || "Could not verify your session.");
+          setCheckingAuth(false);
+          return;
+        }
+        if (!session) {
+          router.replace("/login?next=/tool");
+          return;
+        }
+        setUserEmail(session.user?.email ?? null);
+        setUserId(session.user?.id ?? null);
+        setCheckingAuth(false);
+      })
+      .catch((e) => {
+        const msg =
+          e instanceof Error && e.message === "Failed to fetch"
+            ? "Network error: could not reach sign-in (check connection, VPN, or ad blockers)."
+            : e instanceof Error
+              ? e.message
+              : "Could not reach sign-in service.";
+        setAuthFetchError(msg);
+        setCheckingAuth(false);
+      });
+  };
+
   return (
     <>
-      {checkingAuth ? (
+      {authFetchError ? (
+        <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-black px-6 text-center text-white">
+          <p className="max-w-md text-sm text-zinc-300">{authFetchError}</p>
+          <button
+            type="button"
+            onClick={retryAuthCheck}
+            className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-emerald-400"
+          >
+            Try again
+          </button>
+        </div>
+      ) : checkingAuth ? (
         <div className="min-h-screen bg-black text-white flex items-center justify-center">
           <p className="text-sm text-zinc-300">Checking your account...</p>
         </div>

@@ -6,13 +6,7 @@ export async function proxy(request: NextRequest) {
   return updateSession(request);
 }
 
+/** Only `/tool` needs session refresh + unauthenticated redirect. Avoid `getUser()` on /login /register (slow/hang). */
 export const config = {
-  matcher: [
-    "/tool",
-    "/tool/:path*",
-    "/login",
-    "/register",
-    "/auth",
-    "/auth/:path*",
-  ],
+  matcher: ["/tool", "/tool/:path*"],
 };

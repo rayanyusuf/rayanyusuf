@@ -50,6 +50,14 @@ export function SignUpForm({ nextPath }: Props) {
       setMessage(
         "Check your email to confirm, then sign in. If email confirmation is off in Supabase, you can sign in now."
       );
+    } catch (e) {
+      const msg =
+        e instanceof Error && e.message === "Failed to fetch"
+          ? "Network error: could not reach sign-in. Check connection and that your Supabase URL is correct."
+          : e instanceof Error
+            ? e.message
+            : "Something went wrong.";
+      setError(msg);
     } finally {
       setStatus("idle");
     }

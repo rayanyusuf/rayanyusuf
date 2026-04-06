@@ -44,6 +44,14 @@ export function SignInForm({ nextPath, initialError }: Props) {
       }
       router.push(safeNext);
       router.refresh();
+    } catch (e) {
+      const msg =
+        e instanceof Error && e.message === "Failed to fetch"
+          ? "Network error: could not reach sign-in. Check connection and that your Supabase URL is correct."
+          : e instanceof Error
+            ? e.message
+            : "Something went wrong.";
+      setError(msg);
     } finally {
       setStatus("idle");
     }
